@@ -1580,6 +1580,7 @@ Owner: open · Status: in progress
       build's to fix."). The `a11y` block survives Clean room (`visitor_view` keeps it).
       Passing it is a floor, not an accessibility audit. Test on a page where the original
       and the build share a barrier
+      — claimed: rmsff, branch feature/r2.5-a11y-floor
 
 ### R2.7 The request decides how to build
 Owner: open · Status: in progress

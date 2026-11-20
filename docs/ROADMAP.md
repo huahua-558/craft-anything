@@ -416,6 +416,7 @@ Every round spends the person's money or quota. One that can't do anything shoul
       (time, tokens, `cost_usd`, `api_billed_usd`); the activity log has each turn's tokens but
       no cost, since a resumed agent's figure can't be tied to one turn (`activity.rs`). Show
       the run's tokens, and a cost only where it can be attributed
+      — claimed: rmsff, branch feature/r5.3-last-run-usage
 - [ ] **decision** Whether a build gets a token or cost limit of its own, beyond rounds and that
       stop (#399): a model that changes code without ever running a build isn't caught by it.
       One shape: price each builder turn before it runs, as asset calls already are

@@ -2240,6 +2240,12 @@ Gaps found while using the app for real projects.
       terminal found npm (#2178): programs are looked up in a PATH whose `%VAR%` entries are
       expanded (`which::expand_vars`), and in Node.js's own install folder after it
       — claimed: justinjohn0306, branch bugfix/2178-npm-on-windows-path
+- [x] Rust setup says what to do when rustup is on the computer without a selected toolchain
+      (Homebrew's rustup ships only `rustup`; `cargo` appears after `rustup default`), instead of
+      pointing at rustup.rs, whose installer refuses to run over an existing install (#2252): the
+      engine inventory finds rustup (and `engines_list` reports it), the Rust setup step and status
+      line say to run `rustup default stable`, and so does a new build's missing-cargo stop
+      — claimed: kaovilai, branch bugfix/rustup-toolchain-step
 
 ### R2.10 Pinned builds
 Owner: maintainers · Status: in progress

@@ -260,8 +260,6 @@ fn plugins_add(ctx: &mut Ctx<'_>, params: Value) -> Result<ToolOutput, ToolError
     if let Some(problem) = plugin.problem() {
         return Err(ToolError::invalid(problem));
     }
-    // A program that isn't there is refused now, not found out at its first refresh (#2153).
-    plugin.program()?;
     let mut next = ctx.session.settings.clone();
     if next.plugins.wasm.iter().any(|x| x.id == plugin.id) {
         if !replace {
@@ -282,6 +280,8 @@ fn plugins_add(ctx: &mut Ctx<'_>, params: Value) -> Result<ToolOutput, ToolError
         }
         None => next.plugins.mcp.push(plugin.clone()),
     }
+    // A program that isn't there is refused now, not found out at its first refresh (#2153).
+    plugin.program()?;
     let path = save_settings(ctx, next)?;
     Ok(ToolOutput::Value(
         json!({"added": plugin.id, "runs": plugin.place(), "asks_before_each_call": true, "path": path, "next": "plugins_refresh reads its tools"}),

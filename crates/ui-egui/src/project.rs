@@ -184,8 +184,11 @@ impl CraftApp {
     /// Start a run, or queue it when as many as Settings allows are already building.
     fn launch(&mut self, ws: Workspace, opts: RunOptions) -> Result<Started, craft_anything_engine::evidence::ToolError> {
         self.runs.set_limit(self.settings.build.parallel);
-        // Cleared even when the start fails, so an error card never shows an earlier run's use.
-        self.last_run.remove(&ws.root);
+        // Cleared even when the start fails, so an error card never shows an earlier run's use,
+        // but not for a second start of a project already building, which is turned down.
+        if !self.runs.is_running(&ws.root) && self.runs.position(&ws.root).is_none() {
+            self.last_run.remove(&ws.root);
+        }
         self.runs.start(&self.hub, ws, opts)
     }
 

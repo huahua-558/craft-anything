@@ -11,8 +11,9 @@
 //!   (format tag, channels, rate) and a `data` chunk (Microsoft/IBM Multimedia Programming
 //!   Interface and Data Specifications 1.0, 1991; format tags as in RFC 2361);
 //! - Ogg: pages (`OggS`, version 0) back to back to the record's end, the first marked beginning
-//!   and the last end of stream (RFC 3533 section 6); the first packet names the codec: Vorbis
-//!   (Vorbis I specification, section 4.2.2) or Opus (RFC 7845 section 5.1).
+//!   and the last end of stream, numbered without a gap (RFC 3533 section 6); the first packet
+//!   names the codec: Vorbis (Vorbis I specification, section 4.2.2) or Opus (RFC 7845 section
+//!   5.1).
 //!
 //! Anything else (Bink Audio, Oodle-compressed or a game's own codec, a sound split into streamed
 //! chunks) is refused rather than guessed at.
@@ -132,11 +133,22 @@ fn ogg(b: &[u8]) -> Option<Found> {
         return None;
     }
     let (mut at, mut first, mut last_flags) = (0usize, None, 0u8);
+    // The stream's serial number and the sequence number its next page must have.
+    let mut stream: Option<(u32, u32)> = None;
     while at < b.len() {
-        // A page: `OggS`, version 0, header flags, 20 bytes, the segment count and table, the body.
+        // A page: `OggS`, version 0, header flags, granule position, serial and sequence numbers,
+        // checksum, the segment count and table, the body.
         let header = b.get(at..at + 27).filter(|h| h.starts_with(b"OggS\0"));
         let Some(header) = header else { return Some(Found::Part) };
         let (flags, segments) = (header[5], usize::from(header[26]));
+        let (serial, sequence) = (le_u32(header, 14)?, le_u32(header, 18)?);
+        // A missing page breaks the count (RFC 3533 section 6): a stream starts at 0, at a page
+        // marked beginning of stream, and each page follows the one before.
+        let expected = if flags & 2 != 0 { (serial, 0) } else { stream.unwrap_or((serial, u32::MAX)) };
+        if (serial, sequence) != expected {
+            return Some(Found::Part);
+        }
+        stream = Some((serial, sequence.wrapping_add(1)));
         let Some(table) = b.get(at + 27..at + 27 + segments) else { return Some(Found::Part) };
         let body = at + 27 + segments;
         let end = body + table.iter().map(|n| usize::from(*n)).sum::<usize>();
@@ -256,7 +268,13 @@ mod tests {
         let segments = usize::from(ogg[26]);
         let first_page = 27 + segments + ogg[27..27 + segments].iter().map(|n| usize::from(*n)).sum::<usize>();
         let wav = wav_file(1, 1, 8000, &[0; 32]);
-        for cut in [&ogg[..first_page], &wav[..wav.len() - 4]] {
+        // Its pages without the middle one: beginning and end of stream, but not one whole file.
+        let page_end = |at: usize| {
+            let segments = usize::from(ogg[at + 26]);
+            at + 27 + segments + ogg[at + 27..at + 27 + segments].iter().map(|n| usize::from(*n)).sum::<usize>()
+        };
+        let gap = [&ogg[..first_page], &ogg[page_end(first_page)..]].concat();
+        for cut in [&ogg[..first_page], &wav[..wav.len() - 4], &gap[..]] {
             let (uasset, uexp) = unreal_sound_package("S", "OGG", cut, false);
             let (data, names) = export_data(&uasset, &uexp);
             assert!(matches!(sound(data, &names, None), Err(FormatError::Unsupported(m)) if m.contains("in parts")), "{}", cut.len());

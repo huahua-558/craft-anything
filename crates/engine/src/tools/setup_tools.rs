@@ -96,7 +96,8 @@ pub fn specs() -> Vec<ToolSpec> {
             summary: "Before adding an MCP server as a plugin, check that it works: takes the same fields as plugins_add, looks for a command's program, starts the server (or reaches the url), completes the handshake and lists its tools, then stops it. Nothing is saved or cached. It runs the plugin's program, so it needs consent. It doesn't call any of the tools.",
             beginner: "Checks that an add-on starts and answers, before you add it.",
             toolset: Toolset::Setup,
-            effects: Effects::LAUNCHES_PROCESS.union(Effects::WRITES_FILESYSTEM).union(Effects::EXECUTES_FOREIGN_CODE),
+            // A url is a remote server it connects to.
+            effects: Effects::LAUNCHES_PROCESS.union(Effects::WRITES_FILESYSTEM).union(Effects::EXECUTES_FOREIGN_CODE).union(Effects::ACCESSES_NETWORK),
             requires: Requires::Nothing,
             input_schema: schema_of::<AddPluginParams>,
             run: plugins_test,

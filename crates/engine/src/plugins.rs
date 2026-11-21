@@ -107,8 +107,9 @@ impl McpPlugin {
     }
 
     /// Where a local server's program is (`None` for a remote server), or why it can't be found
-    /// (#2153). A bare name is looked for on the plugin's own `PATH` and the usual search path;
-    /// a relative path from its `cwd` too, where it is started.
+    /// (#2153), looked for as it is started: a bare name on the plugin's own `PATH` when it sets
+    /// one (its relative folders from its `cwd`), and on the usual search path; a relative path
+    /// from its `cwd` on Unix, which the child starts in.
     pub fn program(&self) -> Result<Option<PathBuf>, ToolError> {
         if self.remote_url().is_some() {
             return Ok(None);
@@ -116,12 +117,26 @@ impl McpPlugin {
         let command = self.command.trim();
         let as_path = Path::new(command);
         let first = |name: &Path, path: Option<std::ffi::OsString>| which::which_in(&name.to_string_lossy(), path).into_iter().next();
+        let cwd = self.cwd.as_deref();
         let found = if as_path.components().count() > 1 || as_path.is_absolute() {
-            // It starts in its `cwd`, so a relative path is looked for there as well as from here.
-            let in_cwd = self.cwd.as_ref().filter(|_| as_path.is_relative()).map(|cwd| cwd.join(as_path));
-            in_cwd.into_iter().chain(std::iter::once(as_path.to_path_buf())).find_map(|p| first(&p, None))
+            // Unix starts a relative path from the child's folder; Windows from ours.
+            let from = match cwd {
+                Some(cwd) if cfg!(unix) && as_path.is_relative() => cwd.join(as_path),
+                _ => as_path.to_path_buf(),
+            };
+            first(&from, None)
         } else {
-            [self.env.get("PATH").map(std::ffi::OsString::from), which::search_path()].into_iter().flatten().find_map(|path| first(as_path, Some(path)))
+            let own = self.env.get("PATH").and_then(|own| {
+                let folders = std::env::split_paths(own).map(|f| match cwd {
+                    Some(cwd) if f.is_relative() => cwd.join(f),
+                    _ => f,
+                });
+                std::env::join_paths(folders).ok()
+            });
+            // Unix looks a bare name up on the child's PATH, so the plugin's own replaces the
+            // usual one; Windows starts what the usual search path finds first.
+            let paths = if cfg!(unix) && own.is_some() { vec![own] } else { vec![which::search_path(), own] };
+            paths.into_iter().flatten().find_map(|path| first(as_path, Some(path)))
         };
         found.map(Some).ok_or_else(|| {
             ToolError::new(ErrorCode::NotFound, format!("The {} plugin's program, {command}, isn't on this computer.", self.display_name()))
@@ -459,7 +474,17 @@ mod tests {
         let up = dir.parent().unwrap();
         let relative = format!("{}/{name}", dir.file_name().unwrap().to_string_lossy());
         assert!(plugin(&relative).program().is_err(), "not beside the app");
-        assert!(McpPlugin { cwd: Some(up.to_path_buf()), ..plugin(&relative) }.program().is_ok(), "from its cwd");
+        if cfg!(unix) {
+            assert!(McpPlugin { cwd: Some(up.to_path_buf()), ..plugin(&relative) }.program().is_ok(), "from its cwd");
+            // A relative folder on its PATH is the child's, from its cwd.
+            let folder = dir.file_name().unwrap().to_string_lossy().into_owned();
+            let relative_path = McpPlugin { env: BTreeMap::from([("PATH".to_string(), folder)]), cwd: Some(up.to_path_buf()), ..plugin(&name) };
+            assert_eq!(relative_path.program().unwrap(), Some(dir.join(&name)));
+            // Its own PATH replaces the usual one, so a program only there isn't found.
+            let empty = tempfile::tempdir().unwrap();
+            let own_only = McpPlugin { env: BTreeMap::from([("PATH".to_string(), empty.path().to_string_lossy().into_owned())]), ..plugin("sh") };
+            assert!(plugin("sh").program().is_ok() && own_only.program().is_err(), "sh isn't on the plugin's PATH");
+        }
     }
 
     /// A test starts the server and lists its tools, and saves nothing.

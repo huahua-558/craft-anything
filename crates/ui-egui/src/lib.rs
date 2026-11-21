@@ -1115,7 +1115,8 @@ impl CraftApp {
                 if let Some(s) = self.engine.try_session() {
                     self.settings.plugins = s.settings.plugins.clone();
                 }
-                if tool == "plugins_add" {
+                // Only the form that was added: one edited meanwhile keeps the new entry.
+                if tool == "plugins_add" && self.state.plugin_form.params().as_ref() == Some(params) {
                     self.state.plugin_form = Default::default();
                 }
                 self.toast(tr(if tool == "plugins_add" { "Plugin added. Read its tools to start using them." } else { "Plugin removed." }), false);

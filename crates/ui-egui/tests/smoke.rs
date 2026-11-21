@@ -2254,6 +2254,35 @@ fn a_plugin_is_checked_and_tested_before_its_added() {
     assert!(h.get_by_label("Test").accesskit_node().is_disabled(), "a .wasm file has no server to start");
 }
 
+/// The form is emptied once its plugin is added, unless it was changed while the add ran: then
+/// the new entry stays.
+#[test]
+fn a_plugin_typed_while_another_is_added_is_kept() {
+    let mut h = harness(|| {
+        let mut a = demo::app(demo::engine(Mode::Beginner, true));
+        a.state.settings_open = true;
+        a
+    });
+    h.run_steps(3);
+    h.get_by_label("Plugins").click();
+    h.run_steps(3);
+    let program = std::env::current_exe().unwrap().display().to_string();
+    let add = |h: &mut Harness<'_, CraftApp>, id: &str| {
+        h.state_mut().state.plugin_form.id = id.into();
+        h.state_mut().state.plugin_form.place = program.clone();
+        h.run_steps(2);
+        h.get_by_label("Add").click();
+        h.run_steps(1);
+    };
+    add(&mut h, "first");
+    h.state_mut().state.plugin_form.id = "second".into();
+    assert!(wait(&mut h, |a| a.settings.plugins.mcp.iter().any(|p| p.id == "first")), "{:?}", h.state().state.toasts);
+    assert_eq!(h.state().state.plugin_form.id, "second", "the entry typed meanwhile is kept");
+    add(&mut h, "third");
+    assert!(wait(&mut h, |a| a.settings.plugins.mcp.iter().any(|p| p.id == "third")), "{:?}", h.state().state.toasts);
+    assert!(h.state().state.plugin_form.id.is_empty(), "the added entry is cleared");
+}
+
 #[test]
 fn a_website_check_lists_each_pages_likeness() {
     let mut h = harness(|| {

@@ -548,6 +548,8 @@ pub struct Places {
     pub program_data: Option<PathBuf>,
     pub app_data: Option<PathBuf>,
     pub home: Option<PathBuf>,
+    /// The Steam client location registered on Windows, if present.
+    pub steam_root: Option<PathBuf>,
     /// An explicit Unreal installation root, preferred over registered installations when valid.
     pub unreal_root: Option<PathBuf>,
     /// Explicit Visual Studio or VC toolset directories (`VSINSTALLDIR`, `VCINSTALLDIR`, `VCToolsInstallDir`).
@@ -563,11 +565,20 @@ impl Places {
     /// Capture environment-based search locations and the supplied engine store, with PATH lookup enabled.
     pub fn here(store: PathBuf) -> Places {
         let env = |k: &str| std::env::var_os(k).map(PathBuf::from);
+        #[cfg(windows)]
+        let steam_root = winreg::RegKey::predef(winreg::enums::HKEY_CURRENT_USER)
+            .open_subkey(r"Software\Valve\Steam")
+            .ok()
+            .and_then(|key| key.get_value::<String, _>("SteamPath").ok())
+            .map(PathBuf::from);
+        #[cfg(not(windows))]
+        let steam_root = None;
         Places {
             program_files: [env("ProgramFiles"), env("ProgramFiles(x86)"), env("ProgramW6432")].into_iter().flatten().collect(),
             program_data: env("ProgramData"),
             app_data: env("APPDATA"),
             home: env("HOME").or_else(|| env("USERPROFILE")),
+            steam_root,
             unreal_root: env("UE_ROOT"),
             vs_roots: [env("VSINSTALLDIR"), env("VCINSTALLDIR"), env("VCToolsInstallDir")].into_iter().flatten().collect(),
             applications: cfg!(target_os = "macos").then(|| PathBuf::from("/Applications")),
@@ -769,7 +780,49 @@ fn godot_installs(p: &Places) -> Vec<Installed> {
             }
         }
     }
+    v.extend(steam_godot_installs(p));
     v
+}
+
+/// Find the Windows editor in Steam's main folder or one of its configured libraries.
+fn steam_godot_installs(p: &Places) -> Vec<Installed> {
+    let roots: std::collections::BTreeSet<_> =
+        p.steam_root.iter().cloned().chain(p.program_files.iter().map(|dir| dir.join("Steam"))).filter(|p| p.is_absolute()).collect();
+    let mut editors = std::collections::BTreeSet::new();
+    roots
+        .into_iter()
+        .flat_map(|root| {
+            let other_libraries = steam_library_paths(&root);
+            std::iter::once(root).chain(other_libraries)
+        })
+        .filter_map(|library| {
+            // Steam's Windows launch targets for Godot Engine (app 404790).
+            let folder = library.join("steamapps/common/Godot Engine");
+            let program =
+                ["godot.windows.opt.tools.64.exe", "godot.windows.opt.tools.32.exe"].into_iter().map(|exe| folder.join(exe)).find(|exe| exe.is_file())?;
+            // Steam's registry and library paths can spell the same location with different casing.
+            let identity = program.canonicalize().unwrap_or_else(|_| program.clone());
+            editors.insert(identity).then_some(Installed { builder: Builder::Godot, version: String::new(), program })
+        })
+        .collect()
+}
+
+/// Steam writes one quoted `path` entry per library, with backslashes doubled.
+fn steam_library_paths(root: &Path) -> Vec<PathBuf> {
+    let Ok(file) = std::fs::File::open(root.join("steamapps/libraryfolders.vdf")) else { return Vec::new() };
+    let mut config = String::new();
+    if file.take(1 << 20).read_to_string(&mut config).is_err() {
+        return Vec::new();
+    }
+    config
+        .lines()
+        .filter_map(|line| {
+            let value = line.trim().strip_prefix("\"path\"")?.trim();
+            let value = value.strip_prefix('"')?.strip_suffix('"')?;
+            let path = PathBuf::from(value.replace("\\\\", "\\"));
+            path.is_absolute().then_some(path)
+        })
+        .collect()
 }
 
 /// Check filesystem presence of MSVC, Xcode, or the selected Linux engine's bundled Clang.
@@ -1334,6 +1387,37 @@ mod tests {
         assert_eq!(inv.engines.iter().filter(|i| i.builder == Builder::Unreal).count(), 2);
         assert!(!inv.cpp_tools, "an older engine's compiler cannot establish readiness for the selected engine");
         assert!(!inv.ready(Builder::Unreal));
+    }
+
+    #[test]
+    fn finds_godot_in_steams_default_and_secondary_libraries() {
+        let d = tempfile::tempdir().unwrap();
+        let program_files = d.path().join("Program Files (x86)");
+        let steam = program_files.join("Steam");
+        let secondary = d.path().join("Steam Library");
+        let editor = "steamapps/common/Godot Engine/godot.windows.opt.tools.64.exe";
+        let places = Places { program_files: vec![program_files], store: d.path().join("store"), ..Default::default() };
+
+        touch(&steam, editor, b"");
+        assert_eq!(inventory(&places).best(Builder::Godot).map(|i| i.program.clone()), Some(steam.join(editor)));
+        let registered = Places { steam_root: Some(steam.join("steamapps/..")), ..places.clone() };
+        let editors = inventory(&registered).engines.into_iter().filter(|i| i.builder == Builder::Godot).count();
+        assert_eq!(editors, 1, "the registry and Program Files can point to the same editor");
+        std::fs::remove_file(steam.join(editor)).unwrap();
+
+        let library_path = secondary.to_string_lossy().replace('\\', "\\\\");
+        touch(
+            &steam,
+            "steamapps/libraryfolders.vdf",
+            format!("\"libraryfolders\"\n{{\n\t\"1\"\n\t{{\n\t\t\"path\"\t\t\"{library_path}\"\n\t}}\n}}\n").as_bytes(),
+        );
+        let places = Places { steam_root: Some(steam), program_files: Vec::new(), ..places };
+        let program = secondary.join(editor);
+        std::fs::create_dir_all(&program).unwrap();
+        assert!(!inventory(&places).ready(Builder::Godot));
+        std::fs::remove_dir(&program).unwrap();
+        touch(&secondary, editor, b"");
+        assert_eq!(inventory(&places).best(Builder::Godot).map(|i| i.program.clone()), Some(program));
     }
 
     #[test]

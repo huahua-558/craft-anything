@@ -972,6 +972,26 @@ impl<'a> D<'a> {
         self.push(N::Global { prefix: what.into(), inner: Box::new(name), suffix: String::new() })
     }
 
+    /// `Tg` and one digit: a generic specialization of the declaration before the digit, such as
+    /// `generic specialization <Swift.UInt8> of Swift.Array.count.getter : Swift.Int`. The operand is
+    /// an underscore (popped as `FirstMarker`), then the declaration it specializes, then the type it
+    /// is specialized for, in that order. The digit is consumed and not printed.
+    fn generic_specialization(&mut self) -> R<()> {
+        let kind = self.next()?;
+        if !kind.is_ascii_digit() {
+            return Err("expected a generic specialization kind digit".into());
+        }
+        if !matches!(self.pop()?, N::FirstMarker) {
+            return Err("generic specialization without a marker".into());
+        }
+        let arg = self.pop_type()?;
+        if !type_arg_allowed(&arg) {
+            return Err("expected a type".into());
+        }
+        let base = self.pop_type()?;
+        self.push(N::Global { prefix: format!("generic specialization <{}> of", render(&arg, 0)), inner: Box::new(base), suffix: String::new() })
+    }
+
     /// `WT`: a conformance, the path of an associated type, and the protocol that type conforms
     /// to. The path is a first element, then `_`, then any further elements; an element is a name,
     /// optionally followed by the protocol that declares it.
@@ -1362,6 +1382,7 @@ impl<'a> D<'a> {
                         return self.async_thunk(format!("({i}) {phrase} partial function for"));
                     }
                     b'v' => return self.outlined_variable(),
+                    b'g' => return self.generic_specialization(),
                     _ => return Err("unsupported thunk or specialization".into()),
                 };
                 self.global(prefix)
@@ -1591,6 +1612,36 @@ impl<'a> D<'a> {
             }
             other => Err(format!("unsupported operator '{}'", char::from(other))),
         }
+    }
+}
+
+/// Whether a node is an acceptable generic-specialization argument type: it must contain no
+/// non-type nodes (`Global`, `Entity` or `Conformance`) at any depth.
+fn type_arg_allowed(n: &N) -> bool {
+    match n {
+        N::Global { .. } | N::Entity { .. } | N::Conformance { .. } => false,
+        N::Nominal { ctx, .. } => type_arg_allowed(ctx),
+        N::Extension { module, ty } => type_arg_allowed(module) && type_arg_allowed(ty),
+        N::Bound { base, args } => type_arg_allowed(base) && args.iter().all(type_arg_allowed),
+        N::Tuple(elems) => elems.iter().all(|(_, x)| type_arg_allowed(x)),
+        N::Func { params, result, attrs } => {
+            type_arg_allowed(params)
+                && type_arg_allowed(result)
+                && attrs.actor.as_ref().is_none_or(|a| type_arg_allowed(a))
+                && match &attrs.throws {
+                    Throws::Typed(e) => type_arg_allowed(e),
+                    _ => true,
+                }
+        }
+        N::FnMarker(FnMarker::Actor(x) | FnMarker::Thrown(x)) => type_arg_allowed(x),
+        N::Metatype(x) | N::ExistentialMetatype(x) | N::ReprMetatype(x) | N::Inout(x) | N::OpaqueDecl(x) => type_arg_allowed(x),
+        N::OpaqueRef { decl, .. } => type_arg_allowed(decl),
+        N::Attributed { inner, .. } => type_arg_allowed(inner),
+        N::ClassBound { class, protos } => type_arg_allowed(class) && protos.iter().all(type_arg_allowed),
+        N::Member { base, .. } => type_arg_allowed(base),
+        N::Existential(v) => v.iter().all(type_arg_allowed),
+        N::Generic { sig: _, ty } => type_arg_allowed(ty),
+        _ => true,
     }
 }
 

@@ -3618,6 +3618,11 @@ Owner: open · Status: in progress
 - [x] Recognize an escaped slash (`\/`) after a `**` globstar segment in `js_source::Ignore`
       while preserving the separate literal slash token.
       — claimed: Plastic-time, branch bugfix/r3.12-gitignore-globstar-escaped-slash
+- [x] Decode Swift generic specialization symbols: `Tg<n>` pops the specialization type and the
+      declaration it specializes and prints `generic specialization <T> of …`, so the symbols such as
+      `_$sSa5countSivgs5UInt8V_Tg5` (`generic specialization <Swift.UInt8> of Swift.Array.count.getter : Swift.Int`)
+      decode. Other rendering (no `(extension in …)` prefix, unsupported manglings reported invalid) is unchanged.
+      — claimed: Chr0mium24, branch bugfix/r3.12-swift-demangle-generic-spec
 
 
 - [x] Take target file signatures from the shared craft-sniff table. The app still breaks ties

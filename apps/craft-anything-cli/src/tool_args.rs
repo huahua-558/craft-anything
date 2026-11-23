@@ -302,7 +302,7 @@ pub fn help(spec: &ToolSpec, schema: &Value) -> String {
     }
     let own_format = props.contains_key("format");
     s.push_str(&format!(
-        "\nOutput:\n  --output-format                json, jsonl, md or text{}\n",
+        "\nOutput:\n  --output-format                json, jsonl, md, text, csv or tsv{}\n",
         if own_format { " (--format after the tool name is this tool's own option)" } else { " (--format works too)" }
     ));
     s
@@ -337,6 +337,13 @@ mod tests {
             assert!(e.contains("expects a number"), "{e}");
         }
         assert_eq!(convert("number", "x", "1.5"), Ok(json!(1.5)));
+    }
+
+    #[test]
+    fn help_lists_csv_and_tsv_output_formats() {
+        let r = Registry::with_all_tools();
+        let h = help(r.get("core_journal_read").unwrap());
+        assert!(h.lines().any(|line| line.contains("--output-format") && line.contains("csv") && line.contains("tsv")), "{h}");
     }
 
     #[test]

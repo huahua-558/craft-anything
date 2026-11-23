@@ -3625,6 +3625,9 @@ Owner: open · Status: in progress
       or manifest, ASAR, text). Fat Mach-O files that start 0xCAFEBABF are now recognized.
       — claimed: FredApps, branch refactor/target-kind-craft-sniff
 
+- [x] A Swift mangling ending `Ts<n>` decodes as `generic pre-specialization <...> of ...` instead of `unsupported thunk or specialization`, collecting the generic arguments from the stack (for example `_$sSa12_endMutationyyFyXl_Ts5`).
+      — claimed: Chr0mium24, branch bugfix/r3.12-swift-demangle-pre-spec
+
 ### R3.13 Web inspection correctness
 Owner: open · Status: in progress
 - [x] Decode character references in HTML page titles before returning their displayed text.

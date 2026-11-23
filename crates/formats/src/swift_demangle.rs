@@ -972,6 +972,51 @@ impl<'a> D<'a> {
         self.push(N::Global { prefix: what.into(), inner: Box::new(name), suffix: String::new() })
     }
 
+    /// `Ts<n>`: a generic pre-specialization of an entity for a list of generic arguments that
+    /// precede this operator on the stack, separated by `FirstMarker`s. The trailing single digit is a
+    /// specialization id and is not printed.
+    fn generic_pre_specialization(&mut self) -> R<()> {
+        if self.stack.len() < 2 {
+            return Err("generic pre-specialization without arguments".into());
+        }
+        let mut args = Vec::new();
+        let mut saw_boundary = false;
+        while self.stack.len() > 1 {
+            let n = self.pop()?;
+            if matches!(n, N::FirstMarker) {
+                saw_boundary = true;
+                continue;
+            }
+            if matches!(
+                n,
+                N::Ident(_)
+                    | N::Private(_)
+                    | N::Operator(_)
+                    | N::EmptyList
+                    | N::Throws
+                    | N::Async
+                    | N::FnMarker(_)
+                    | N::Requirement(_)
+                    | N::Sig { .. }
+                    | N::Module(_)
+            ) {
+                return Err("expected a type argument".into());
+            }
+            args.push(n);
+        }
+        if !saw_boundary {
+            return Err("generic pre-specialization without a boundary".into());
+        }
+        if args.is_empty() {
+            return Err("generic pre-specialization without arguments".into());
+        }
+        args.reverse();
+        let entity = self.pop()?;
+        let arg_text = args.iter().map(|n| render(n, 0)).collect::<Vec<_>>().join(", ");
+        let prefix = format!("generic pre-specialization <{arg_text}> of");
+        self.push(N::Global { prefix, inner: Box::new(entity), suffix: String::new() })
+    }
+
     /// `WT`: a conformance, the path of an associated type, and the protocol that type conforms
     /// to. The path is a first element, then `_`, then any further elements; an element is a name,
     /// optionally followed by the protocol that declares it.
@@ -1362,6 +1407,13 @@ impl<'a> D<'a> {
                         return self.async_thunk(format!("({i}) {phrase} partial function for"));
                     }
                     b'v' => return self.outlined_variable(),
+                    b's' => {
+                        let c = self.next()?;
+                        if !c.is_ascii_digit() {
+                            return Err("specialization id".into());
+                        }
+                        return self.generic_pre_specialization();
+                    }
                     _ => return Err("unsupported thunk or specialization".into()),
                 };
                 self.global(prefix)

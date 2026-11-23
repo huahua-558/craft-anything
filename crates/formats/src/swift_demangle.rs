@@ -1521,7 +1521,9 @@ impl<'a> D<'a> {
             }
             b'm' => {
                 let t = self.pop_type()?;
-                self.push(N::Metatype(Box::new(t)))
+                // `m` after `p` makes a protocol metatype, which swift-demangle spells `.Protocol`
+                // instead of `.Type`; other metatypes are still `.Type`.
+                if matches!(t, N::Existential(_)) { self.push(N::ReprMetatype(Box::new(t))) } else { self.push(N::Metatype(Box::new(t))) }
             }
             b'p' => {
                 let protos = self.protocol_list()?;

@@ -7,6 +7,7 @@ use super::*;
 
 mod aider;
 mod antigravity;
+mod commandcode;
 mod copilot;
 mod devin;
 mod dsh;
@@ -16,6 +17,7 @@ mod maki;
 mod opencode;
 pub use aider::Aider;
 pub use antigravity::Antigravity;
+pub use commandcode::CommandCode;
 pub use copilot::Copilot;
 pub use devin::Devin;
 pub use dsh::DeepSeekHarness;
@@ -327,6 +329,7 @@ impl AgentAdapters {
                 Arc::new(Grok),
                 Arc::new(DeepSeekHarness),
                 Arc::new(Devin),
+                Arc::new(CommandCode),
             ],
         }
     }

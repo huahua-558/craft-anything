@@ -786,6 +786,23 @@ launch or preview was run for this documentation correction.
   on 2026-11-06 finished, called the Craft Anything server, and answered one permission request under a
   temporary ask-mode home. The person's own config was not changed. A config that approves every tool does not ask.
   See [grok.md](grok.md).
+- Command Code (`command-code acp`) is offered when `command-code` is installed, and found by
+  Detect. ACP only: its headless print mode (`-p --output-format json`) has no way to hand over an
+  MCP server, so a build there could not reach our tools. `session/new` carries our server (326
+  tools listed in a live run) and permission requests reach the approval policy. Model and effort
+  are set with `session/set_config_option` after the session opens; the seven shared levels map
+  onto the four Command Code accepts (`off`, `low`, `high`, `max`), since it refuses the rest with
+  "Unknown effort". Clean room, deep chat and questions are refused: reads are not
+  permission-gated (only edits and commands ask), so only a deep build can be held to what it
+  promises. Extra `args` are refused, so no `--yolo` or `--permission-mode dont-ask` can bypass
+  approvals, and a saved Command Code setting that approves every tool is not overridden either:
+  an edit may then run without a permission request. A missing `~/.commandcode/auth.json` is
+  unknown rather than signed out. Checked
+  against Command Code 1.91.1: `initialize`, `session/new`, `session/set_config_option` and the
+  permission round trip. A live deep build on 2026-11-20 finished the build stage and compiled the
+  app; its check then needed a display this machine doesn't have, which is unrelated to the
+  adapter. The person's own MCP config was not changed.
+  See [command-code.md](command-code.md).
 - Maki (`maki -p`, or over ACP with `acp = true`) is offered when adding a coding agent and found by
   Detect. Over ACP it asks us before commands, our own tools and writes outside its working folder;
   writes inside that folder (a build's project folder, our own records included) and every read

@@ -1143,6 +1143,22 @@ Owner: open · Status: in progress
       are refused.
       See [Grok Build](grok.md).
       — branch `feature/r2.2-grok-agent`
+- [x] Command Code as a coding agent over ACP (`command-code acp`): discovery, the person's own
+      `command-code login` (a missing `~/.commandcode/auth.json` is unknown, so it still starts),
+      model and effort set again with `session/set_config_option` after `session/new` (the seven
+      shared levels map onto the four Command Code accepts — `off`, `low`, `high`, `max` — since it
+      refuses the rest with "Unknown effort"), and our MCP server on the session. ACP only: its
+      headless print mode has no way to hand over a server. Clean room, deep chat and questions are
+      refused, because a native read does not ask permission (only edits and commands do), so only
+      a deep build can be held to what it promises; extra arguments are refused too, so no `--yolo`
+      or `--permission-mode dont-ask` bypasses the approval policy. Craft Anything does not pass
+      such a flag, and does not override a saved Command Code setting that approves every tool: an
+      edit may then run without a permission request, as a Grok config that approves every tool
+      does. Verified against Command Code
+      1.91.1: the handshake, `session/set_config_option` and the permission round trip. A live deep
+      build on 2026-11-20 attached all 326 tools, finished the build stage and compiled the app; its
+      check then needed a display the machine didn't have.
+      — branch `feature/command-code-adapter`
 - [x] Review hardening: cap target handoff at 128 while preserving the active target; propagate
       context-discovery cancellation, normalize CLI-only efforts for Claude requests, and name
       the configured agent in shared picker warnings, with focused regressions and translations

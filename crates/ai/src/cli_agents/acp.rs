@@ -34,6 +34,9 @@ pub const ACP_AGENTS: &[(&str, &[&str])] = &[
     // Flags that belong to this mode (`--model`, `--no-leader`) go between `agent` and `stdio`.
     ("grok", &["agent"]),
     ("devin", &["acp"]),
+    // `CommandCode::ids()` answers to both names its installer links, so both must start in ACP mode.
+    ("command-code", &["acp"]),
+    ("commandcode", &["acp"]),
 ];
 
 /// Agents whose ACP mode takes the backend's model (`cli_model`), and the flag after the ACP

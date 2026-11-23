@@ -3624,6 +3624,8 @@ Owner: open · Status: in progress
       that need its own parsers (managed PE, Java class versus a universal Mach-O, APK by name
       or manifest, ASAR, text). Fat Mach-O files that start 0xCAFEBABF are now recognized.
       — claimed: FredApps, branch refactor/target-kind-craft-sniff
+- [x] Swift generic parameters at depth > 0 (`qd__`, `qd_0_` …) now decode as `A1`, `B1` instead of `expected an index`, both as types and in generic requirements, reading the depth and the parameter index; other depths and other generic-parameter forms stay invalid. Example symbol `_$sSz18truncatingIfNeededxqd___tcSzRd__lufCTj` now prints `dispatch thunk of Swift.BinaryInteger.init<A where A1: Swift.BinaryInteger>(truncatingIfNeeded: A1) -> A`.
+      — claimed: Chr0mium24, branch bugfix/r3.12-swift-demangle-deep-generics
 
 ### R3.13 Web inspection correctness
 Owner: open · Status: in progress

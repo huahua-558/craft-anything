@@ -1310,6 +1310,12 @@ impl<'a> D<'a> {
                 let (param, idx) = match self.next()? {
                     b'z' => ("A".to_string(), 0),
                     b'_' => ("B".into(), 1),
+                    b'd' => {
+                        // Generic type parameter at depth > 0 (`qd…`), as in `Rd…`.
+                        let depth = self.index()?.checked_add(1).ok_or("overflow")?;
+                        let pidx = self.index()?;
+                        (param_name(depth, pidx), 0)
+                    }
                     d if d.is_ascii_digit() => {
                         self.pos -= 1;
                         let n = self.natural().ok_or("requirement index")?;
@@ -1529,9 +1535,19 @@ impl<'a> D<'a> {
             }
             b'o' => self.operator_name(),
             b'q' => {
-                let i = self.index()?.checked_add(1).ok_or("overflow")?;
-                self.note_param(i);
-                self.push(N::Param(0, i))
+                if self.next_if(b'd') {
+                    // Generic type parameter at depth > 0: `qd<depth index>_<parameter index>_`.
+                    // The depth index is one-based in the printed name (`qd__` is depth 1), and
+                    // the parameter index is zero-based, so a depth-0-style `x` is never produced
+                    // here.
+                    let depth = self.index()?.checked_add(1).ok_or("overflow")?;
+                    let idx = self.index()?;
+                    self.push(N::Param(depth, idx))
+                } else {
+                    let i = self.index()?.checked_add(1).ok_or("overflow")?;
+                    self.note_param(i);
+                    self.push(N::Param(0, i))
+                }
             }
             b's' => self.push(N::Module("Swift".into())),
             b't' => {

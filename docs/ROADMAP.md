@@ -3624,6 +3624,8 @@ Owner: open · Status: in progress
       that need its own parsers (managed PE, Java class versus a universal Mach-O, APK by name
       or manifest, ASAR, text). Fat Mach-O files that start 0xCAFEBABF are now recognized.
       — claimed: FredApps, branch refactor/target-kind-craft-sniff
+- [x] Decode protocol conformance descriptors whose generic requirements were left as a signature node, and function-typed property descriptors whose empty label-list marker shifted the name, so symbols such as `_$s11TabularData6ColumnVyxGSQAASQRzlMc` now read like `swift-demangle`.
+      — claimed: Chr0mium24, branch bugfix/r3.12-swift-demangle-expected-name-context
 
 ### R3.13 Web inspection correctness
 Owner: open · Status: in progress

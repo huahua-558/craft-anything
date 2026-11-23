@@ -3624,6 +3624,12 @@ Owner: open · Status: in progress
       that need its own parsers (managed PE, Java class versus a universal Mach-O, APK by name
       or manifest, ASAR, text). Fat Mach-O files that start 0xCAFEBABF are now recognized.
       — claimed: FredApps, branch refactor/target-kind-craft-sniff
+- [x] Swift symbols using the `_const` (`Yt`) and `isolated` (`Yi`) type attributes on a
+      parameter or value were rejected as `unsupported function attribute`; they now print
+      `_const …` and `isolated …` as `swift-demangle` does, for example
+      `_$s10AppIntents20IntentCollectionSizeV7exactlyACSiYt_tcfC` prints
+      `AppIntents.IntentCollectionSize.init(exactly: _const Swift.Int) -> AppIntents.IntentCollectionSize`.
+      — claimed: Chr0mium24, branch bugfix/r3.12-swift-demangle-const-isolated
 
 ### R3.13 Web inspection correctness
 Owner: open · Status: in progress

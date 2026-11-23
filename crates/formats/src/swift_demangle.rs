@@ -1425,6 +1425,16 @@ impl<'a> D<'a> {
                     let t = self.pop_type()?;
                     self.push(N::FnMarker(FnMarker::Thrown(Box::new(t))))
                 }
+                // `_const`: a compile-time constant parameter/value.
+                b't' => {
+                    let t = self.pop_type()?;
+                    self.push(N::Attributed { text: "_const ", inner: Box::new(t), wrapped: true })
+                }
+                // `isolated`: a parameter carrying an isolated actor.
+                b'i' => {
+                    let t = self.pop_type()?;
+                    self.push(N::Attributed { text: "isolated ", inner: Box::new(t), wrapped: true })
+                }
                 _ => Err("unsupported function attribute".into()),
             },
             b'Z' => {

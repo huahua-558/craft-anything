@@ -1625,14 +1625,31 @@ fn weight(n: &N, depth: usize) -> usize {
     kids.saturating_add(1)
 }
 
-fn param_name(depth: u64, index: u64) -> String {
-    let letter = u8::try_from(index % 26).map(|i| char::from(b'A' + i)).unwrap_or('A');
-    let round = index / 26;
-    match (depth, round) {
-        (0, 0) => letter.to_string(),
-        (0, r) => format!("{letter}{r}"),
-        (d, _) => format!("{letter}{d}"),
+fn generic_param_letters(index: u64) -> String {
+    // Swift numbers generic parameters A..Z, then AB..ZB, AC..ZC, ... and so on,
+    // taking every previously named prefix and prefixing it with another letter.
+    // This is the same recurrence swift-demangle prints (checked against
+    // /Library/Developer/CommandLineTools/usr/bin/swift-demangle): index 26 is
+    // AB, index 676 is AAB, index 4966 is AJH. Dividing by 26 strictly reduces
+    // the index, so this always terminates, and every digit is 0..25, so the
+    // result contains only ASCII letters with no overflow.
+    if index < 26 {
+        char::from(b'A' + u8::try_from(index).unwrap_or(0)).to_string()
+    } else {
+        let mut out = String::new();
+        out.push(char::from(b'A' + u8::try_from(index % 26).unwrap_or(0)));
+        out.push_str(&generic_param_letters(index / 26));
+        out
     }
+}
+
+fn param_name(depth: u64, index: u64) -> String {
+    // Swift names the first 26 generic parameters of a depth with the single
+    // letters A..Z. Further parameters add letters according to
+    // `generic_param_letters`. A non-zero depth (a generic parameter of an
+    // inner declaration) keeps its numeric suffix after the letters, e.g. AB1.
+    let base = generic_param_letters(index);
+    if depth == 0 { base } else { format!("{base}{depth}") }
 }
 
 fn path(n: &N, depth: usize) -> String {
@@ -1673,7 +1690,7 @@ fn params_text(p: &N, labels: &[Option<String>], depth: usize) -> String {
 
 fn sig_text(sig: &N, max_param: u64) -> String {
     let N::Sig { reqs } = sig else { return String::new() };
-    let params: Vec<String> = (0..=max_param.min(25)).map(|i| param_name(0, i)).collect();
+    let params: Vec<String> = (0..=max_param.min(1023)).map(|i| param_name(0, i)).collect();
     if reqs.is_empty() { format!("<{}>", params.join(", ")) } else { format!("<{} where {}>", params.join(", "), reqs.join(", ")) }
 }
 
@@ -1965,6 +1982,14 @@ mod tests {
         let d = demangle(s);
         assert_eq!(d.status, Status::Demangled, "{s}: {:?}", d.reason);
         d.demangled.unwrap()
+    }
+
+    #[test]
+    fn generic_param_names_past_two_letters_stay_letters() {
+        // swift-demangle confirms: index 676 is AAB, index 4966 is AJH.
+        assert_eq!(param_name(0, 676), "AAB");
+        assert_eq!(param_name(0, 4966), "AJH");
+        assert!(param_name(0, 4966).chars().all(|c| c.is_ascii_alphabetic()));
     }
 
     #[test]

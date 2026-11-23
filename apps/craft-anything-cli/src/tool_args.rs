@@ -194,7 +194,7 @@ pub fn parse(spec: &ToolSpec, schema: &Value, args: &[String]) -> Result<ToolInv
             continue;
         }
         if let Some(path) = a.strip_prefix('@')
-            && path.ends_with(".json")
+            && path.rsplit_once('.').is_some_and(|(_, ext)| ext.eq_ignore_ascii_case("json"))
         {
             merge(&mut params, read_json_arg(a)?)?;
             continue;
@@ -430,11 +430,17 @@ mod tests {
     fn at_file_input() {
         let dir = std::env::temp_dir().join(format!("cany-cli-test-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
-        let f = dir.join("p.json");
-        std::fs::write(&f, r#"{"question":"q?"}"#).unwrap();
         let r = Registry::with_all_tools();
-        let inv = parse(r.get("core_brief_write").unwrap(), &[format!("@{}", f.display())]).unwrap();
-        assert_eq!(inv.params["question"], "q?");
+        let tool = r.get("core_brief_write").unwrap();
+        for name in ["lower.json", "upper.JSON", "mixed.JsOn"] {
+            let f = dir.join(name);
+            std::fs::write(&f, r#"{"question":"q?"}"#).unwrap();
+            let arg = format!("@{}", f.display());
+            let direct = parse(tool, std::slice::from_ref(&arg)).unwrap();
+            let explicit = parse(tool, &["--json".into(), arg]).unwrap();
+            assert_eq!(direct.params["question"], "q?", "{name}");
+            assert_eq!(direct.params, explicit.params, "{name}");
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 

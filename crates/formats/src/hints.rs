@@ -132,10 +132,16 @@ pub fn detect(b: &Binary, data: &[u8]) -> Vec<Hint> {
         push(&mut out, hint("node", "runtime", "Node.js runtime", "weak", "Node.js symbols or library"));
     }
     // Flutter / Dart
-    if lib("libflutter").is_some() || lib("Flutter.framework").is_some() {
-        push(&mut out, hint("flutter", "framework", "Flutter (Dart)", "strong", "links the Flutter engine"));
+    // Android and iOS link libflutter.so / Flutter.framework; desktop builds link
+    // flutter_windows.dll, libflutter_linux_gtk.so or FlutterMacOS.framework (#2227).
+    let flutter_engine = ["libflutter", "Flutter.framework", "flutter_windows.dll", "FlutterMacOS.framework"].into_iter().find_map(lib);
+    if let Some(engine) = flutter_engine {
+        push(&mut out, hint("flutter", "framework", "Flutter (Dart)", "strong", format!("links the Flutter engine ({engine})")));
     } else if sym("kDartVmSnapshotData") || sym("_kDartVmSnapshotData") || sym("kDartIsolateSnapshotInstructions") {
         push(&mut out, hint("flutter", "framework", "Flutter (Dart AOT snapshot)", "strong", "Dart snapshot symbols"));
+    } else if let Some(marker) = FLUTTER_STRINGS.into_iter().find(|m| bytes(m)) {
+        let marker = String::from_utf8_lossy(marker);
+        push(&mut out, hint("flutter", "framework", "Flutter (Dart)", "weak", format!("Flutter text in the data ({marker})")));
     }
     // Swift / Objective-C
     if let Some(s) = sec_prefix("__swift5") {
@@ -242,6 +248,10 @@ pub fn detect(b: &Binary, data: &[u8]) -> Vec<Hint> {
     }
     out
 }
+
+/// Text a Flutter program or its engine carries. Any program could quote these, so finding one
+/// without the engine in the imports is only a weak hint.
+const FLUTTER_STRINGS: [&[u8]; 5] = [b"flutter_assets", b"flutter_windows.dll", b"libflutter_linux_gtk.so", b"FlutterMacOS", b"FlutterDesktop"];
 
 /// A version token the byte scan may accept: `go1.<digits>(.<digits>)*`.
 fn is_go_version(v: &str) -> bool {

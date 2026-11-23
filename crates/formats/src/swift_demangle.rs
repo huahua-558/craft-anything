@@ -1642,7 +1642,9 @@ fn path(n: &N, depth: usize) -> String {
     match n {
         N::Module(m) | N::Ident(m) => m.clone(),
         N::Nominal { ctx, name, .. } => format!("{}.{name}", path(ctx, depth + 1)),
-        N::Extension { ty, .. } => path(ty, depth + 1),
+        // An extension is printed with its declaring module in parentheses before the extended
+        // type, as in `(extension in Foundation):Swift.String.Encoding`.
+        N::Extension { module, ty } => format!("(extension in {}):{}", path(module, depth + 1), path(ty, depth + 1)),
         other => render(other, depth + 1),
     }
 }
@@ -1992,7 +1994,7 @@ mod tests {
         assert_eq!(dm("$s4main3fooyyxSHRzlF"), "main.foo<A where A: Swift.Hashable>(A) -> ()");
         assert_eq!(dm("$s4main4loadSSyKF"), "main.load() throws -> Swift.String");
         assert_eq!(dm("$s4main4loadSSyYaKF"), "main.load() async throws -> Swift.String");
-        assert_eq!(dm("$sSi4mainE6doubleSiyF"), "Swift.Int.double() -> Swift.Int");
+        assert_eq!(dm("$sSi4mainE6doubleSiyF"), "(extension in main):Swift.Int.double() -> Swift.Int");
         assert_eq!(dm("$s4main6WidgetCAA8DelegateAAWP"), "protocol witness table for main.Widget : main.Delegate in main");
         assert_eq!(dm("$s4main5PointVMn"), "nominal type descriptor for main.Point");
         assert_eq!(dm("$s4main4ModeOMa"), "type metadata accessor for main.Mode");
@@ -2029,16 +2031,16 @@ mod tests {
         // Extensions: `AH` is `Range<String.Index>`, `AE` is `UIButton.Configuration`.
         assert_eq!(
             dm("_$sSo11NLTokenizerC15NaturalLanguageE6tokens3forSaySnySS5IndexVGGAH_tF"),
-            "__C.NLTokenizer.tokens(for: Swift.Range<Swift.String.Index>) -> [Swift.Range<Swift.String.Index>]"
+            "(extension in NaturalLanguage):__C.NLTokenizer.tokens(for: Swift.Range<Swift.String.Index>) -> [Swift.Range<Swift.String.Index>]"
         );
         assert_eq!(
             dm("_$sSo8UIButtonC5UIKitE13ConfigurationV13macIdiomStyleAE03MaceF0Ovs"),
-            "__C.UIButton.Configuration.macIdiomStyle.setter : __C.UIButton.Configuration.MacIdiomStyle"
+            "(extension in UIKit):__C.UIButton.Configuration.macIdiomStyle.setter : (extension in UIKit):__C.UIButton.Configuration.MacIdiomStyle"
         );
         // An extension and an `Sg` before `AN`: right only when both are counted the mangler's way.
         assert_eq!(
             dm("_$sSo8NLTaggerC15NaturalLanguageE4tags2in4unit6scheme7optionsSaySo5NLTagaSg_SnySS5IndexVGtGAN_So11NLTokenUnitVSo0I6SchemeaSo0A7OptionsVtF"),
-            "__C.NLTagger.tags(in: Swift.Range<Swift.String.Index>, unit: __C.NLTokenUnit, scheme: __C.NLTagScheme, options: __C.NLTaggerOptions) -> [(__C.NLTag?, Swift.Range<Swift.String.Index>)]"
+            "(extension in NaturalLanguage):__C.NLTagger.tags(in: Swift.Range<Swift.String.Index>, unit: __C.NLTokenUnit, scheme: __C.NLTagScheme, options: __C.NLTaggerOptions) -> [(__C.NLTag?, Swift.Range<Swift.String.Index>)]"
         );
     }
 

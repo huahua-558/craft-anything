@@ -3625,6 +3625,12 @@ Owner: open · Status: in progress
       or manifest, ASAR, text). Fat Mach-O files that start 0xCAFEBABF are now recognized.
       — claimed: FredApps, branch refactor/target-kind-craft-sniff
 
+- [x] Print the `(extension in Module):` prefix in Swift demangled names where `swift-demangle`
+      prints it, so extension-context types and members keep their declaring module instead of
+      reading as the extended type alone. For example `_$s10Foundation20NSUTF8StringEncodingSSAAE0D0Vvg`
+      prints `Foundation.NSUTF8StringEncoding.getter : (extension in Foundation):Swift.String.Encoding`.
+      — claimed: Chr0mium24, branch bugfix/r3.12-swift-demangle-extension-prefix
+
 ### R3.13 Web inspection correctness
 Owner: open · Status: in progress
 - [x] Decode character references in HTML page titles before returning their displayed text.

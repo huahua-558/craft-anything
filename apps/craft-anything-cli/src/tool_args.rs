@@ -102,7 +102,8 @@ pub fn read_json_arg(raw: &str) -> Result<Value, String> {
             None => raw.to_string(),
         }
     };
-    serde_json::from_str(&text).map_err(|e| format!("params must be a JSON object: {e}"))
+    let text = text.strip_prefix('\u{feff}').unwrap_or(&text);
+    serde_json::from_str(text).map_err(|e| format!("params must be a JSON object: {e}"))
 }
 
 /// Most bytes of parameters taken from standard input.
@@ -431,10 +432,12 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("cany-cli-test-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let f = dir.join("p.json");
-        std::fs::write(&f, r#"{"question":"q?"}"#).unwrap();
         let r = Registry::with_all_tools();
-        let inv = parse(r.get("core_brief_write").unwrap(), &[format!("@{}", f.display())]).unwrap();
-        assert_eq!(inv.params["question"], "q?");
+        for contents in [r#"{"question":"q?"}"#, "\u{feff}{\"question\":\"q?\"}"] {
+            std::fs::write(&f, contents).unwrap();
+            let inv = parse(r.get("core_brief_write").unwrap(), &[format!("@{}", f.display())]).unwrap();
+            assert_eq!(inv.params["question"], "q?");
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 

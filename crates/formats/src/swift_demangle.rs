@@ -1101,12 +1101,21 @@ impl<'a> D<'a> {
             b'B' => {
                 let t = match self.next()? {
                     b'b' => "Builtin.BridgeObject".to_string(),
+                    b'c' => "Builtin.RawUnsafeContinuation".into(),
+                    b'd' => "Builtin.NonDefaultDistributedActorStorage".into(),
+                    b'e' => "Builtin.Executor".into(),
+                    b'j' => "Builtin.Job".into(),
                     b'o' => "Builtin.NativeObject".into(),
                     b'O' => "Builtin.UnknownObject".into(),
                     b'p' => "Builtin.RawPointer".into(),
                     b't' => "Builtin.SILToken".into(),
                     b'w' => "Builtin.Word".into(),
+                    b'A' => "Builtin.ImplicitActor".into(),
                     b'B' => "Builtin.UnsafeValueBuffer".into(),
+                    b'D' => "Builtin.DefaultActorStorage".into(),
+                    b'I' => "Builtin.IntLiteral".into(),
+                    b'P' => "Builtin.PackIndex".into(),
+                    b'T' => "Builtin.TheTupleType".into(),
                     b'i' => {
                         let n = self.natural().ok_or("builtin width")?;
                         self.next_if(b'_');
@@ -1116,6 +1125,22 @@ impl<'a> D<'a> {
                         let n = self.natural().ok_or("builtin width")?;
                         self.next_if(b'_');
                         format!("Builtin.FPIEEE{n}")
+                    }
+                    b'v' => {
+                        let count = self.natural().ok_or("builtin vector count")?;
+                        if count == 0 || count > 4096 {
+                            return Err("builtin vector count out of range".into());
+                        }
+                        if !self.next_if(b'_') {
+                            return Err("builtin vector count terminator".into());
+                        }
+                        let elem = self.pop()?;
+                        let elem = match elem {
+                            N::Builtin(s) => s,
+                            _ => return Err("builtin vector element is not a builtin".into()),
+                        };
+                        let elem = elem.strip_prefix("Builtin.").unwrap_or(&elem);
+                        format!("Builtin.Vec{count}x{elem}")
                     }
                     _ => return Err("unsupported builtin type".into()),
                 };

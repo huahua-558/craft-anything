@@ -3624,6 +3624,8 @@ Owner: open · Status: in progress
       that need its own parsers (managed PE, Java class versus a universal Mach-O, APK by name
       or manifest, ASAR, text). Fat Mach-O files that start 0xCAFEBABF are now recognized.
       — claimed: FredApps, branch refactor/target-kind-craft-sniff
+- [x] Swift parameter ownership `__owned` (operator `n`) now decodes as `__owned T`, e.g. `_$ss10ArraySliceV6appendyyxnF` reads `Swift.ArraySlice.append(__owned A) -> ()`; it previously reported `unsupported operator 'n'`.
+      — claimed: Chr0mium24, branch bugfix/r3.12-swift-demangle-owned
 
 ### R3.13 Web inspection correctness
 Owner: open · Status: in progress

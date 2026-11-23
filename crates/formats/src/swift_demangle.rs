@@ -1523,6 +1523,10 @@ impl<'a> D<'a> {
                 let t = self.pop_type()?;
                 self.push(N::Metatype(Box::new(t)))
             }
+            b'n' => {
+                let t = self.witness_type()?;
+                self.push(N::Attributed { text: "__owned ", inner: Box::new(t), wrapped: true })
+            }
             b'p' => {
                 let protos = self.protocol_list()?;
                 self.push(N::Existential(protos))

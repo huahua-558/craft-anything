@@ -1115,7 +1115,23 @@ impl CraftApp {
                 if let Some(s) = self.engine.try_session() {
                     self.settings.plugins = s.settings.plugins.clone();
                 }
+                // Only the form that was added: one edited meanwhile keeps the new entry.
+                if tool == "plugins_add" && self.state.plugin_form.params().as_ref() == Some(params) {
+                    self.state.plugin_form = Default::default();
+                }
                 self.toast(tr(if tool == "plugins_add" { "Plugin added. Read its tools to start using them." } else { "Plugin removed." }), false);
+            }
+            ("plugins_test", Ok(v)) => {
+                let tools: Vec<&str> = v["tools"].as_array().into_iter().flatten().filter_map(Value::as_str).collect();
+                let words = match tools.as_slice() {
+                    [] => tr("It answered, with no tools."),
+                    _ => i18n::trf("It answered with {n} tools: {names}.", &[("n", &tools.len().to_string()), ("names", &tools.join(", "))]),
+                };
+                self.toast(words, false);
+            }
+            ("plugins_test", Err(e)) => {
+                let why = tr("The plugin's test failed.");
+                self.toast(format!("{why} {}", e.for_people()), true);
             }
             ("plugins_refresh", Ok(v)) => {
                 let failed: Vec<String> = v["refreshed"]

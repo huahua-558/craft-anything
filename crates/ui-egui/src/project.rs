@@ -1187,15 +1187,10 @@ fn steps(app: &CraftApp, ui: &mut Ui, ws: &Workspace) {
                 widgets::stat_row(ui, cost.label, &cost.value).on_hover_text(tip());
                 // Said outright, not only on hover: on a subscription this isn't what they pay.
                 if let Some(note) = cost.note {
-                    ui.add(
-                        egui::Label::new(
-                            RichText::new(tr(note))
-                                .color(Tokens::get(ui.ctx()).text_faint)
-                                .size(theme::CAPTION)
-                                .line_height(Some(theme::leading(theme::CAPTION))),
-                        )
-                        .wrap(),
-                    );
+                    let faint = Tokens::get(ui.ctx()).text_faint;
+                    crate::i18n::wrapped_label(ui, &crate::i18n::tr_logical(note), egui::FontId::proportional(theme::CAPTION), |r| {
+                        r.color(faint).line_height(Some(theme::leading(theme::CAPTION)))
+                    });
                 }
             }
             if let Some(usage) = u.tokens() {
@@ -1559,9 +1554,9 @@ fn continue_card(app: &mut CraftApp, ui: &mut Ui, ws: &Workspace) {
         ui.set_width(ui.available_width());
         ui.horizontal(|ui| {
             icons::show(ui, "history", theme::icon::LG, t.accent);
-            ui.add(egui::Label::new(RichText::new(tr(title)).font(theme::semibold(theme::BODY))).wrap());
+            crate::i18n::wrapped_label(ui, &crate::i18n::tr_logical(title), theme::semibold(theme::BODY), |r| r);
         });
-        ui.add(egui::Label::new(RichText::new(tr(body)).color(t.text_dim)).wrap());
+        crate::i18n::wrapped_label(ui, &crate::i18n::tr_logical(body), egui::TextStyle::Body.resolve(ui.style()), |r| r.color(t.text_dim));
         ui.add_space(theme::space::SM);
         ui.horizontal(|ui| {
             go = widgets::primary_icon(ui, Some("play"), "Continue", true).clicked();

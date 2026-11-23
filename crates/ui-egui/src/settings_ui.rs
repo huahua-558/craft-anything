@@ -132,9 +132,9 @@ fn row(ui: &mut Ui, title: &str, sub: &str, add: impl FnOnce(&mut Ui)) {
             ui.set_width(280.0);
             ui.label(RichText::new(tr(title)).font(theme::medium(theme::BODY)));
             if !sub.is_empty() {
-                ui.add(
-                    egui::Label::new(RichText::new(tr(sub)).color(t.text_faint).size(theme::CAPTION).line_height(Some(theme::leading(theme::CAPTION)))).wrap(),
-                );
+                crate::i18n::wrapped_label(ui, &crate::i18n::tr_logical(sub), egui::FontId::proportional(theme::CAPTION), |r| {
+                    r.color(t.text_faint).line_height(Some(theme::leading(theme::CAPTION)))
+                });
             }
         });
         add(ui);
@@ -176,7 +176,12 @@ fn general(app: &mut CraftApp, ui: &mut Ui) {
             }
             // Both modes draw text at one size: zoom is the way to make it bigger.
             let t = Tokens::get(ui.ctx());
-            ui.label(RichText::new(tr("Text bigger or smaller: Ctrl/⌘ + and Ctrl/⌘ −. Ctrl/⌘ 0 resets it.")).color(t.text_faint).size(theme::CAPTION));
+            crate::i18n::wrapped_label(
+                ui,
+                &crate::i18n::tr_logical("Text bigger or smaller: Ctrl/⌘ + and Ctrl/⌘ −. Ctrl/⌘ 0 resets it."),
+                egui::FontId::proportional(theme::CAPTION),
+                |r| r.color(t.text_faint),
+            );
         });
     });
     let dir = app.settings.projects_dir();
@@ -443,13 +448,10 @@ fn ai(app: &mut CraftApp, ui: &mut Ui) {
                         if let Some(instead) = app.program_replaced.get(&b.name) {
                             ui.horizontal_wrapped(|ui| {
                                 ui.style_mut().override_font_id = Some(egui::FontId::proportional(theme::CAPTION));
-                                let text = trf("It isn't there any more, so {program} runs in its place.", &[("program", instead)]);
-                                ui.add(
-                                    egui::Label::new(
-                                        RichText::new(text).color(t.warning).size(theme::CAPTION).line_height(Some(theme::leading(theme::CAPTION))),
-                                    )
-                                    .wrap(),
-                                );
+                                let text = crate::i18n::trf_logical("It isn't there any more, so {program} runs in its place.", &[("program", instead)]);
+                                crate::i18n::wrapped_label(ui, &text, egui::FontId::proportional(theme::CAPTION), |r| {
+                                    r.color(t.warning).line_height(Some(theme::leading(theme::CAPTION)))
+                                });
                                 let path = std::path::Path::new(instead);
                                 if path.parent().is_some_and(|p| !p.as_os_str().is_empty()) && widgets::link(ui, "Use it").clicked() {
                                     use_program = Some((b.name.clone(), instead.clone()));
@@ -1128,15 +1130,13 @@ fn builds(app: &mut CraftApp, ui: &mut Ui) {
 /// listed, turned on or off, added and removed.
 fn plugins(app: &mut CraftApp, ui: &mut Ui) {
     let t = Tokens::get(ui.ctx());
-    ui.add(
-        egui::Label::new(
-            RichText::new(tr(
-                "Plugins add tools Craft Anything offers as its own: MCP servers (a command or an address; read their tools after adding) or WebAssembly components (a .wasm file, which can't touch your files or the network).",
-            ))
-            .color(t.text_faint)
-            .size(theme::CAPTION),
-        )
-        .wrap(),
+    crate::i18n::wrapped_label(
+        ui,
+        &crate::i18n::tr_logical(
+            "Plugins add tools Craft Anything offers as its own: MCP servers (a command or an address; read their tools after adding) or WebAssembly components (a .wasm file, which can't touch your files or the network).",
+        ),
+        egui::FontId::proportional(theme::CAPTION),
+        |r| r.color(t.text_faint),
     );
     ui.add_space(theme::space::MD);
     let plugins = app.settings.plugins.mcp.clone();

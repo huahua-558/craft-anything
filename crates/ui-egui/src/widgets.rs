@@ -195,8 +195,16 @@ pub fn suggestion(ui: &mut Ui, text: &str) -> Response {
 pub fn choice_tile(ui: &mut Ui, size: Vec2, icon: &str, label: &str, blurb: &str, on: bool) -> Response {
     let t = Tokens::get(ui.ctx());
     let wrap = size.x - 84.0;
-    let g = ui.painter().layout(tr(label), theme::medium(theme::BODY), t.text, wrap);
-    let sub = (!blurb.is_empty()).then(|| ui.painter().layout(tr(blurb), egui::FontId::proportional(theme::SMALL), t.text_dim, wrap));
+    let rtl = crate::i18n::is_rtl();
+    let g_wrap = if rtl { f32::INFINITY } else { wrap };
+    let label_font = theme::medium(theme::BODY);
+    let label_text = crate::i18n::wrapped_visual_lines(ui.ctx(), rtl, &crate::i18n::tr_logical(label), label_font.clone(), wrap);
+    let g = ui.painter().layout(label_text, label_font, t.text, g_wrap);
+    let sub = (!blurb.is_empty()).then(|| {
+        let blurb_font = egui::FontId::proportional(theme::SMALL);
+        let blurb_text = crate::i18n::wrapped_visual_lines(ui.ctx(), rtl, &crate::i18n::tr_logical(blurb), blurb_font.clone(), wrap);
+        ui.painter().layout(blurb_text, blurb_font, t.text_dim, g_wrap)
+    });
     let text_h = g.size().y + sub.as_ref().map_or(0.0, |s| s.size().y + 3.0);
     let (rect, resp) = ui.allocate_exact_size(Vec2::new(size.x, size.y.max(text_h + 24.0)), Sense::click());
     let h = hover_t(ui, &resp);

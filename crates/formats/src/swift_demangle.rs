@@ -315,6 +315,104 @@ impl<'a> D<'a> {
         self.pop_type()
     }
 
+    /// Decode a Swift-modified Punycode encoded identifier.
+    fn punycode_decode(encoded: &str) -> R<String> {
+        for c in encoded.chars() {
+            if !c.is_ascii() {
+                return Err("punycode is not ASCII".into());
+            }
+        }
+        let pos = encoded.rfind('_');
+        let (base_str, ext_str) = match pos {
+            Some(p) => (&encoded[..p], &encoded[p + 1..]),
+            None => ("", encoded),
+        };
+        let mut output: Vec<char> = base_str.chars().collect();
+        let ext: Vec<char> = ext_str.chars().collect();
+
+        fn digit(c: char) -> Option<u32> {
+            if c.is_ascii_lowercase() {
+                Some((c as u32) - b'a' as u32)
+            } else if c.is_ascii_uppercase() {
+                let d = (c as u32) - b'A' as u32;
+                if d < 10 { Some(26 + d) } else { None }
+            } else {
+                None
+            }
+        }
+        fn t_val(j: u32, bias: u32) -> u32 {
+            let v = 36u32.saturating_mul(j + 1).saturating_sub(bias);
+            v.clamp(1, 26)
+        }
+        fn adapt(delta: u64, first: bool, numchars: usize) -> u32 {
+            let mut d = if first { delta / 700 } else { delta / 2 };
+            d += d / (numchars as u64);
+            let mut divisions = 0u64;
+            while d > 455 {
+                d /= 35;
+                divisions += 36;
+            }
+            (divisions + (36 * d) / (d + 38)) as u32
+        }
+
+        let mut char_val: u32 = 0x80;
+        let mut bias: u32 = 72;
+        let mut extpos = 0usize;
+        let mut pos_idx: isize = -1;
+        while extpos < ext.len() {
+            let old_extpos = extpos;
+            let mut result: u64 = 0;
+            let mut w: u64 = 1;
+            let mut j: u32 = 0;
+            let mut k: u32 = 36;
+            loop {
+                if extpos >= ext.len() {
+                    return Err("truncated punycode".into());
+                }
+                let c = ext[extpos];
+                extpos += 1;
+                let d = digit(c).ok_or("bad punycode digit")?;
+                if d >= 36 {
+                    return Err("bad punycode digit".into());
+                }
+                let product = (d as u64).checked_mul(w).ok_or("punycode overflow")?;
+                result = result.checked_add(product).ok_or("punycode overflow")?;
+                let t = t_val(j, bias) as u64;
+                if (d as u64) < t {
+                    break;
+                }
+                let base_minus_t = 36u64 - t;
+                w = w.checked_mul(base_minus_t).ok_or("punycode overflow")?;
+                k = k.checked_add(36).ok_or("punycode overflow")?;
+                j += 1;
+            }
+            let delta = result;
+            let old_len = output.len();
+            let new_pos = (pos_idx + 1) as i128 + delta as i128;
+            let quotient = new_pos / (old_len as i128 + 1);
+            let inc = u32::try_from(quotient).map_err(|_| "punycode code point out of range")?;
+            char_val = char_val.checked_add(inc).ok_or("punycode code point out of range")?;
+            if char_val > 0x10FFFF {
+                return Err("punycode code point out of range".into());
+            }
+            let pos_rem = (new_pos % (old_len as i128 + 1)) as usize;
+            pos_idx = pos_rem as isize;
+            let ch = char::from_u32(char_val).ok_or("invalid code point")?;
+            if pos_rem <= output.len() {
+                output.insert(pos_rem, ch);
+            } else {
+                return Err("punycode insertion out of range".into());
+            }
+            let new_len = output.len();
+            bias = adapt(delta, old_extpos == 0, new_len);
+            let _ = (k, j);
+        }
+        if output.is_empty() {
+            return Err("empty punycode identifier".into());
+        }
+        Ok(output.into_iter().collect())
+    }
+
     fn identifier(&mut self) -> R<N> {
         let mut has_words = false;
         let mut puny = false;
@@ -326,7 +424,23 @@ impl<'a> D<'a> {
             }
         }
         if puny {
-            return Err("punycode identifiers are not supported".into());
+            let n = self.natural().ok_or("expected punycode length")?;
+            let n = usize::try_from(n).map_err(|_| "punycode length too long")?;
+            if n == 0 {
+                return Err("empty punycode identifier".into());
+            }
+            self.next_if(b'_');
+            let end = self.pos.checked_add(n).ok_or("punycode runs past the end")?;
+            let slice = self.s.get(self.pos..end).ok_or("punycode runs past the end")?;
+            self.pos = end;
+            let encoded = std::str::from_utf8(slice).map_err(|_| "punycode is not UTF-8")?;
+            let id = Self::punycode_decode(encoded)?;
+            if id.is_empty() {
+                return Err("empty punycode identifier".into());
+            }
+            let n = N::Ident(id);
+            self.add_sub(&n)?;
+            return Ok(n);
         }
         let mut id = String::new();
         loop {

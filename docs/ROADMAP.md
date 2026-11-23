@@ -3624,6 +3624,8 @@ Owner: open · Status: in progress
       that need its own parsers (managed PE, Java class versus a universal Mach-O, APK by name
       or manifest, ASAR, text). Fat Mach-O files that start 0xCAFEBABF are now recognized.
       — claimed: FredApps, branch refactor/target-kind-craft-sniff
+- [x] Decode Swift punycode-encoded identifiers (the `00` prefix) using modified Punycode so identifiers containing non-ASCII characters demangle.
+      — claimed: Chr0mium24, branch bugfix/r3.12-swift-demangle-punycode
 
 ### R3.13 Web inspection correctness
 Owner: open · Status: in progress

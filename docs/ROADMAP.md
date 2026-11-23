@@ -3624,6 +3624,8 @@ Owner: open · Status: in progress
       that need its own parsers (managed PE, Java class versus a universal Mach-O, APK by name
       or manifest, ASAR, text). Fat Mach-O files that start 0xCAFEBABF are now recognized.
       — claimed: FredApps, branch refactor/target-kind-craft-sniff
+- [x] Decode Swift `MS`/`WS`/`…TS` protocol self-conformance symbols: `_$ss5ErrorMS` reads `protocol self-conformance descriptor for Swift.Error`, `_$ss5ErrorWS` reads `protocol self-conformance witness table for Swift.Error`, and `_$ss5ErrorP5_codeSivgTS` reads `protocol self-conformance witness for Swift.Error._code.getter : Swift.Int`.
+      — claimed: Chr0mium24, branch bugfix/r3.12-swift-demangle-self-conformance
 
 ### R3.13 Web inspection correctness
 Owner: open · Status: in progress

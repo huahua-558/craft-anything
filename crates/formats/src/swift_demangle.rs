@@ -1185,6 +1185,7 @@ impl<'a> D<'a> {
                     b'm' => "metaclass for",
                     b'f' => "full type metadata for",
                     b'p' => "protocol descriptor for",
+                    b'S' => "protocol self-conformance descriptor for",
                     b'o' => "class metadata base offset for",
                     b'l' => "type metadata singleton initialization cache for",
                     b'L' => "lazy cache variable for type metadata for",
@@ -1225,7 +1226,7 @@ impl<'a> D<'a> {
                 {
                     return Err("metadata cache of a marker".into());
                 }
-                if p.starts_with("protocol descriptor")
+                if (p.starts_with("protocol descriptor") || p.starts_with("protocol self-conformance descriptor"))
                     && let Some(N::Ident(_) | N::Private(_) | N::Operator(_)) = self.stack.last()
                 {
                     let name = self.pop_decl_name()?;
@@ -1243,6 +1244,9 @@ impl<'a> D<'a> {
                         return Err("associated type descriptor of a non-type or outside a module".into());
                     }
                     return self.push(N::Global { prefix: p.into(), inner: Box::new(conf), suffix: String::new() });
+                }
+                if p.starts_with("protocol self-conformance descriptor") && !matches!(self.stack.last(), Some(N::Nominal { kind: 'P', .. })) {
+                    return Err("protocol self-conformance descriptor of a non-protocol".into());
                 }
                 self.global(p)
             }
@@ -1335,6 +1339,7 @@ impl<'a> D<'a> {
                     b'O' => "@nonobjc",
                     b'q' => "method descriptor for",
                     b'j' => "dispatch thunk of",
+                    b'S' => "protocol self-conformance witness for",
                     b'D' => "dynamic",
                     b'd' => "direct method reference to",
                     b'A' => "partial apply forwarder for",
@@ -1364,6 +1369,26 @@ impl<'a> D<'a> {
                     b'v' => return self.outlined_variable(),
                     _ => return Err("unsupported thunk or specialization".into()),
                 };
+                if k == b'S'
+                    && matches!(
+                        self.stack.last(),
+                        Some(
+                            N::EmptyList
+                                | N::FirstMarker
+                                | N::Throws
+                                | N::Async
+                                | N::FnMarker(_)
+                                | N::Requirement(_)
+                                | N::Sig { .. }
+                                | N::Ident(_)
+                                | N::Private(_)
+                                | N::Operator(_)
+                                | N::Module(_)
+                        )
+                    )
+                {
+                    return Err("protocol self-conformance witness of a non-entity".into());
+                }
                 self.global(prefix)
             }
             b'W' => {
@@ -1371,6 +1396,26 @@ impl<'a> D<'a> {
                 match k {
                     b'Z' => self.one_time_init("one-time initialization function for"),
                     b'z' => self.one_time_init("one-time initialization token for"),
+                    b'S' => {
+                        if let Some(N::Ident(_) | N::Private(_) | N::Operator(_)) = self.stack.last() {
+                            let name = self.pop_decl_name()?;
+                            let ctx = self.pop_context()?;
+                            let proto = N::Nominal { kind: 'P', ctx: Box::new(ctx), name };
+                            return self.push(N::Global {
+                                prefix: "protocol self-conformance witness table for".into(),
+                                inner: Box::new(proto),
+                                suffix: String::new(),
+                            });
+                        }
+                        if matches!(self.stack.last(), Some(N::Global { .. } | N::Entity { .. } | N::Conformance { .. } | N::Extension { .. })) {
+                            return Err("witness operand is not a type".into());
+                        }
+                        let ty = self.pop_type()?;
+                        if !matches!(ty, N::Nominal { kind: 'P', .. }) {
+                            return Err("protocol self-conformance witness table for a non-protocol".into());
+                        }
+                        self.push(N::Global { prefix: "protocol self-conformance witness table for".into(), inner: Box::new(ty), suffix: String::new() })
+                    }
                     b'P' | b'p' | b'a' | b'G' => {
                         let conf = self.conformance()?;
                         let p = match k {

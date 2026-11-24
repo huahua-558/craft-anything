@@ -22,7 +22,7 @@ pub mod window;
 pub use capture::{Capture, Event, EventKind, Sig, Spec as CaptureSpec};
 pub use fs::{backup_once, write_atomic, write_atomic_private};
 pub use process::{Cancel, Ended, Launch, Launched, LineSink, Output, Process, RunningProcess, StdinMode, open_path};
-pub use which::{cli_file_name, self_cli_path, which, which_all};
+pub use which::{cli_file_name, self_cli_path, which, which_all, which_usable};
 
 /// Whether this app runs in a Flatpak sandbox (it sets `FLATPAK_ID` and makes `/.flatpak-info`).
 pub fn in_flatpak() -> bool {

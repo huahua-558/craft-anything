@@ -15,12 +15,14 @@ pub fn which_all(name: &str) -> Vec<PathBuf> {
 
 /// Folders, under the home folder and then system-wide, where coding agents, npm, Homebrew and
 /// other installers put command-line programs. OpenCode's installer uses `~/.opencode/bin`, or
-/// `~/bin` when there is one (#112). Grok Build's installer uses `~/.grok/bin`.
+/// `~/bin` when there is one (#112). Grok Build's installer uses `~/.grok/bin`. Homebrew's rustup
+/// is keg-only: only `rustup` is linked into `/opt/homebrew/bin`, and its `cargo`/`rustc` proxies
+/// stay in the keg's own bin folder, where `rustup default` puts no `~/.cargo/bin` either (#2252).
 #[cfg(unix)]
 const USUAL_HOME_DIRS: &[&str] =
     &[".local/bin", ".claude/local", ".npm-global/bin", ".bun/bin", ".volta/bin", ".cargo/bin", ".opencode/bin", ".grok/bin", "bin"];
 #[cfg(unix)]
-const USUAL_DIRS: &[&str] = &["/opt/homebrew/bin", "/usr/local/bin"];
+const USUAL_DIRS: &[&str] = &["/opt/homebrew/bin", "/opt/homebrew/opt/rustup/bin", "/usr/local/bin", "/usr/local/opt/rustup/bin"];
 // Claude Code's installer, npm (without a custom prefix), WinGet's portable packages (Claude
 // Code's WinGet install), bun, cargo, Hermes Agent's installer (`%LOCALAPPDATA%\hermes\bin`, #116),
 // Grok Build (`%USERPROFILE%\.grok\bin`) and the DeepSeek Harness desktop app, whose `dsh.cmd` is
@@ -93,6 +95,87 @@ fn expand_vars(path: &std::ffi::OsStr, var: impl Fn(&str) -> Option<OsString>) -
     }
     out.push_str(rest);
     OsString::from(out)
+}
+
+/// [`which`], but a found program must also be usable: rustup installs its `cargo` as a proxy
+/// beside itself before any toolchain is selected, and that proxy only prints "no default
+/// toolchain configured", so it must not count as Rust being ready (#2252).
+pub fn which_usable(name: &str) -> Option<PathBuf> {
+    // Every match, not just the first: an unusable rustup proxy in ~/.cargo/bin must not mask a
+    // working cargo later on PATH. `RUSTUP_TOOLCHAIN` is read here, not in `cargo_usable`, so a
+    // test can pass its own selection: the variable rides along with whatever started this
+    // process (rustup's own cargo sets it for the commands it runs), so only the caller knows
+    // whether it is the person's choice.
+    let toolchain = std::env::var_os("RUSTUP_TOOLCHAIN").map(|v| v.to_string_lossy().into_owned());
+    which_all(name).into_iter().find(|found| name != "cargo" || cargo_usable(found, None, toolchain.as_deref()))
+}
+
+/// Whether the `cargo` at `found` can build. A `cargo` with no `rustup` beside it is a real
+/// install. A rustup proxy needs a toolchain that is selected and installed: `toolchain_override`
+/// (`RUSTUP_TOOLCHAIN`, when the person's environment names one), else the default in
+/// `settings.toml`, and the toolchains under `toolchains/` — all readable without running
+/// anything. `rustup_home` is rustup's settings folder (`RUSTUP_HOME`, else `~/.rustup`);
+/// `None` reads the environment, tests pass a folder.
+pub fn cargo_usable(found: &Path, rustup_home: Option<&Path>, toolchain_override: Option<&str>) -> bool {
+    let Some(dir) = found.parent() else { return true };
+    if !is_executable(&dir.join(format!("rustup{}", std::env::consts::EXE_SUFFIX))) {
+        return true;
+    }
+    let home = rustup_home
+        .map(Path::to_path_buf)
+        .or_else(|| std::env::var_os("RUSTUP_HOME").map(PathBuf::from))
+        .or_else(|| std::env::var_os(HOME_VAR).map(|h| PathBuf::from(h).join(".rustup")));
+    let Some(home) = home else { return false };
+    // An empty override is absent to rustup, and an absolute path names a toolchain outside
+    // `toolchains/` (a custom build), installed when its folder is there.
+    let selected = toolchain_override.filter(|t| !t.is_empty()).map(str::to_string).or_else(|| {
+        std::fs::read_to_string(home.join("settings.toml")).ok().and_then(|s| {
+            s.lines().find_map(|l| l.split_once('=').filter(|(k, _)| k.trim() == "default_toolchain").map(|(_, v)| v.trim().trim_matches('"').to_string()))
+        })
+    });
+    selected.is_some_and(|t| match Path::new(&t) {
+        p if p.is_absolute() => p.is_dir(),
+        _ => toolchain_installed(&home, &t),
+    })
+}
+
+/// Whether rustup would run the selected toolchain: the name in `RUSTUP_TOOLCHAIN` or
+/// `settings.toml` is the folder under `toolchains/`, or its channel (`stable`, `1.99.0`)
+/// resolved onto the host rustup is configured for.
+fn toolchain_installed(home: &Path, selected: &str) -> bool {
+    !selected.is_empty()
+        && std::fs::read_dir(home.join("toolchains")).is_ok_and(|entries| {
+            let resolved = format!("{selected}-{}", configured_host(home));
+            entries.flatten().any(|e| {
+                let name = e.file_name().to_string_lossy().into_owned();
+                name == resolved || name == selected
+            })
+        })
+}
+
+/// The host rustup resolves a channel onto: the `default_host_triple` the person set
+/// (`rustup set default-host`), else the target this app was built for — an app running under
+/// Rosetta, say, must not assume its own build target is rustup's.
+fn configured_host(home: &Path) -> String {
+    std::fs::read_to_string(home.join("settings.toml"))
+        .ok()
+        .and_then(|s| {
+            s.lines().find_map(|l| l.split_once('=').filter(|(k, _)| k.trim() == "default_host_triple").map(|(_, v)| v.trim().trim_matches('"').to_string()))
+        })
+        .filter(|h| !h.is_empty())
+        .unwrap_or_else(host_triple)
+}
+
+/// The host triple for the target this app was built for, the way rustup names it.
+fn host_triple() -> String {
+    let arch = std::env::consts::ARCH;
+    match std::env::consts::OS {
+        "macos" => format!("{arch}-apple-darwin"),
+        "windows" => format!("{arch}-pc-windows-msvc"),
+        "linux" => format!("{arch}-unknown-linux-gnu"),
+        "freebsd" => format!("{arch}-unknown-freebsd"),
+        os => format!("{arch}-unknown-{os}"),
+    }
 }
 
 /// How to start `program`, and the arguments that go before the caller's. On Windows only `.exe`
@@ -574,6 +657,76 @@ mod tests {
         assert!(dirs.contains(&PathBuf::from(r"C:\Program Files\nodejs")), "{dirs:?}");
     }
 
+    /// #2252: rustup's cargo proxy is only usable once a default toolchain is selected and
+    /// installed; a cargo that isn't rustup's is usable as it is.
+    #[cfg(unix)]
+    #[test]
+    fn a_rustup_cargo_proxy_needs_a_selected_toolchain() {
+        fn command(dir: &Path, name: &str) -> PathBuf {
+            let p = dir.join(name);
+            std::fs::write(&p, b"").unwrap();
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt as _;
+                let mut perms = std::fs::metadata(&p).unwrap().permissions();
+                perms.set_mode(0o755);
+                std::fs::set_permissions(&p, perms).unwrap();
+            }
+            p
+        }
+        let d = tempfile::tempdir().unwrap();
+        let keg = d.path().join("keg/bin");
+        std::fs::create_dir_all(&keg).unwrap();
+        let cargo = command(&keg, "cargo");
+        command(&keg, "rustup");
+        let home = d.path().join("rustup-home");
+        std::fs::create_dir_all(&home).unwrap();
+
+        assert!(!cargo_usable(&cargo, Some(&home), None), "no settings yet: only a proxy");
+        let triple = host_triple();
+        let foreign = if triple.starts_with("x86_64") { "aarch64-unknown-linux-gnu" } else { "x86_64-unknown-linux-gnu" };
+        std::fs::write(home.join("settings.toml"), format!("default_toolchain = \"stable-{triple}\"\n")).unwrap();
+        assert!(!cargo_usable(&cargo, Some(&home), None), "selected but not installed");
+        assert!(!cargo_usable(&cargo, Some(&home), Some("nightly")), "an override that isn't installed");
+        assert!(!cargo_usable(&cargo, Some(&home), Some("")), "no override, no default, nothing installed");
+        // An absolute path selects a toolchain outside `toolchains/`.
+        let custom = d.path().join("custom-toolchain");
+        assert!(!cargo_usable(&cargo, Some(&home), Some(custom.to_str().unwrap())), "an absolute override that isn't there");
+        std::fs::create_dir_all(&custom).unwrap();
+        assert!(cargo_usable(&cargo, Some(&home), Some(custom.to_str().unwrap())), "an absolute override at its folder");
+        // A channel resolves onto this computer's host triple; nothing else satisfies it.
+        std::fs::create_dir_all(home.join(format!("toolchains/stable-{foreign}"))).unwrap();
+        assert!(!cargo_usable(&cargo, Some(&home), None), "a toolchain for another host doesn't satisfy the default");
+        assert!(!toolchain_installed(&home, "stable"), "the channel resolves onto this computer's host");
+        std::fs::create_dir_all(home.join(format!("toolchains/stable-{triple}"))).unwrap();
+        assert!(cargo_usable(&cargo, Some(&home), None), "selected and installed");
+        assert!(cargo_usable(&cargo, Some(&home), Some("stable")), "an override by channel name");
+        assert!(cargo_usable(&cargo, Some(&home), Some("")), "an empty override falls back to the default");
+        assert!(toolchain_installed(&home, "stable"));
+        assert!(toolchain_installed(&home, &format!("stable-{triple}")));
+        assert!(!toolchain_installed(&home, "nightly"));
+        assert!(!toolchain_installed(&home, ""));
+        // A dated toolchain is a different selection from the undated channel, and a custom
+        // name isn't the channel at all.
+        std::fs::create_dir_all(home.join(format!("toolchains/nightly-2025-01-01-{triple}"))).unwrap();
+        assert!(!toolchain_installed(&home, "nightly"), "dated nightly doesn't satisfy the channel");
+        assert!(toolchain_installed(&home, "nightly-2025-01-01"), "the dated selection, named in full");
+        std::fs::create_dir_all(home.join("toolchains/nightly-custom")).unwrap();
+        assert!(!toolchain_installed(&home, "nightly"), "a custom name isn't the channel");
+        std::fs::write(home.join("settings.toml"), "version = 2\n").unwrap();
+        assert!(!cargo_usable(&cargo, Some(&home), None), "no default selected any more");
+        // The channel resolves onto the host the person configured, not this app's build target.
+        std::fs::create_dir_all(home.join(format!("toolchains/1.99.0-{triple}"))).unwrap();
+        std::fs::write(home.join("settings.toml"), format!("default_host_triple = \"{foreign}\"\n")).unwrap();
+        assert!(toolchain_installed(&home, "stable"), "the configured host resolves the channel");
+        assert!(!toolchain_installed(&home, "1.99.0"), "the build target no longer resolves the channel");
+
+        let plain = d.path().join("plain");
+        std::fs::create_dir_all(&plain).unwrap();
+        let cargo = command(&plain, "cargo");
+        assert!(cargo_usable(&cargo, Some(&home), None), "no rustup beside it: a real install");
+    }
+
     #[cfg(unix)]
     #[test]
     fn usual_dirs_come_after_path() {
@@ -585,6 +738,9 @@ mod tests {
         let npm = usize::from(npm_global_bin(&home).is_some());
         assert_eq!(dirs.len(), 1 + USUAL_HOME_DIRS.len() + USUAL_DIRS.len() + npm, "nothing twice");
         assert!(dirs.contains(&PathBuf::from("/opt/homebrew/bin")));
+        // #2252: rustup's keg bin folder too, so a short PATH still finds it.
+        assert!(dirs.contains(&PathBuf::from("/opt/homebrew/opt/rustup/bin")));
+        assert!(dirs.contains(&PathBuf::from("/usr/local/opt/rustup/bin")));
         // No PATH and no home folder: the system-wide folders still.
         assert_eq!(with_usual_dirs(None, None, None), std::env::join_paths(USUAL_DIRS).ok());
     }

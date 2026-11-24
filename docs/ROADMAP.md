@@ -3651,6 +3651,11 @@ Owner: open · Status: in progress
       that need its own parsers (managed PE, Java class versus a universal Mach-O, APK by name
       or manifest, ASAR, text). Fat Mach-O files that start 0xCAFEBABF are now recognized.
       — claimed: FredApps, branch refactor/target-kind-craft-sniff
+- [x] Swift protocol requirements base descriptors decode. A symbol ending `TL` is the protocol
+      requirements base descriptor of the protocol before it, which the demangler reported as an
+      unsupported thunk; `_$s7SwiftUI10ShapeStyleTL` is
+      `protocol requirements base descriptor for SwiftUI.ShapeStyle`.
+      — claimed: Chr0mium24, branch bugfix/r3.12-swift-demangle-req-base-desc
 
 ### R3.13 Web inspection correctness
 Owner: open · Status: in progress

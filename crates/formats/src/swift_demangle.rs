@@ -972,6 +972,30 @@ impl<'a> D<'a> {
         self.push(N::Global { prefix: what.into(), inner: Box::new(name), suffix: String::new() })
     }
 
+    /// `TL`: the protocol requirements base descriptor of a protocol, the descriptor the runtime
+    /// uses to find the protocol's requirement witnesses. The operand is the protocol itself: its
+    /// name (an identifier, an operator or a private name) and the context it is declared in (a
+    /// module, a nominal type or an extension), which take no substitution slot of their own, or a
+    /// protocol type such as the standard library's `SB` (`Swift.BinaryFloatingPoint`).
+    /// `_$s7SwiftUI10ShapeStyleTL` is `protocol requirements base descriptor for
+    /// SwiftUI.ShapeStyle`. A non-protocol type in place of the protocol, and a function, a global
+    /// or a marker in place of the context, are rejected.
+    fn protocol_requirements_base_descriptor(&mut self) -> R<()> {
+        let proto = match self.pop()? {
+            n @ N::Nominal { kind: 'P', .. } => n,
+            N::Ident(name) | N::Private(name) | N::Operator(name) => {
+                let ctx = match self.pop()? {
+                    N::Ident(module) => N::Module(module),
+                    ctx @ (N::Module(_) | N::Nominal { .. } | N::Extension { .. }) => ctx,
+                    _ => return Err("expected a context".into()),
+                };
+                N::Nominal { kind: 'P', ctx: Box::new(ctx), name }
+            }
+            _ => return Err("expected a protocol".into()),
+        };
+        self.push(N::Global { prefix: "protocol requirements base descriptor for".into(), inner: Box::new(proto), suffix: String::new() })
+    }
+
     /// `WT`: a conformance, the path of an associated type, and the protocol that type conforms
     /// to. The path is a first element, then `_`, then any further elements; an element is a name,
     /// optionally followed by the protocol that declares it.
@@ -1362,6 +1386,7 @@ impl<'a> D<'a> {
                         return self.async_thunk(format!("({i}) {phrase} partial function for"));
                     }
                     b'v' => return self.outlined_variable(),
+                    b'L' => return self.protocol_requirements_base_descriptor(),
                     _ => return Err("unsupported thunk or specialization".into()),
                 };
                 self.global(prefix)

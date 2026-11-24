@@ -2576,7 +2576,10 @@ Owner: open · Status: in progress
       — claimed: Afloat16, branch bugfix/r3.11-unreadable-entry-names-20261119
 
 ### R3.12 Format parser correctness
+
 Owner: open · Status: in progress
+- [ ] Move an owned keyed archive's object table into the archive and NIB readers without duplicating every parsed payload.
+      — claimed: Afloat16, branch bugfix/r3.12-keyed-archive-object-copy, issue [#2366](https://github.com/storytold/craft-anything/issues/2366)
 - [x] Keep source-to-bundle comparisons uncertain when source-map inventories are truncated, preserving positive matches and reporting partial tool evidence.
       — claimed: Afloat16, branch bugfix/r3.12-source-map-comparison-uncertainty-20261111
 - [x] Bound expanded source-map inventories by retained path bytes and entries before allocation, preserving bounded prefixes and reporting truncation.

@@ -1362,8 +1362,19 @@ impl<'a> D<'a> {
                         return self.async_thunk(format!("({i}) {phrase} partial function for"));
                     }
                     b'v' => return self.outlined_variable(),
+                    b'x' => "dynamically replaceable key for",
+                    b'X' => "dynamically replaceable variable for",
+                    b'I' => "dynamically replaceable thunk for",
                     _ => return Err("unsupported thunk or specialization".into()),
                 };
+                if matches!(k, b'x' | b'X' | b'I') {
+                    if matches!(self.stack.last(), Some(N::FirstMarker)) {
+                        return Err("dynamically replaceable operand is a parser marker".into());
+                    }
+                    if !matches!(self.stack.last(), Some(N::Global { .. } | N::Entity { .. } | N::Nominal { .. })) {
+                        return Err("dynamically replaceable operand is not a global or entity".into());
+                    }
+                }
                 self.global(prefix)
             }
             b'W' => {

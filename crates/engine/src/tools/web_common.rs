@@ -77,6 +77,9 @@ pub struct Browser {
     /// The `User-Agent` from `/json/version` (empty when unknown); names the runtime.
     pub user_agent: String,
     pub launched: bool,
+    /// The tab browser tools look at when none is named: the study tab `web_site_open` opened in
+    /// the person's own browser, so their other tabs aren't read. `None`: the first page.
+    pub tab: Option<String>,
     // The process is dropped before the profile so its supervisor is asked to stop it first.
     #[allow(dead_code)]
     _proc: Option<RunningProcess>,
@@ -201,6 +204,7 @@ impl Browser {
             version: version.into(),
             user_agent: String::new(),
             launched: false,
+            tab: None,
             _proc: None,
             _profile: None,
             _watch: None,
@@ -218,6 +222,7 @@ impl Browser {
                 user_agent: version.get("User-Agent").and_then(Value::as_str).unwrap_or_default().to_string(),
                 endpoint,
                 launched: false,
+                tab: None,
                 _proc: None,
                 _profile: None,
                 _watch: None,
@@ -227,7 +232,7 @@ impl Browser {
         if let Some(site) = ctx.session.ext.get::<super::website_tools::SiteBrowser>()
             && cdp::json_version(&site.endpoint, dl).is_ok()
         {
-            return Ok(Browser::attached(&site.endpoint, &site.product, &site.version));
+            return Ok(Browser { tab: site.own_tab.clone(), ..Browser::attached(&site.endpoint, &site.product, &site.version) });
         }
         if !opts.allow_launch {
             return Err(engine_missing("no endpoint was given"));
@@ -306,6 +311,7 @@ impl Browser {
             user_agent: version.get("User-Agent").and_then(Value::as_str).unwrap_or_default().to_string(),
             endpoint,
             launched: true,
+            tab: None,
             _watch: craft_anything_platform::end_with_this_process(&proc, profile.as_ref().map(|p| p.0.as_path())),
             _proc: Some(proc),
             _profile: profile,
@@ -349,6 +355,7 @@ impl Browser {
             user_agent: version.get("User-Agent").and_then(Value::as_str).unwrap_or_default().to_string(),
             endpoint,
             launched: true,
+            tab: None,
             _watch: craft_anything_platform::end_with_this_process(&proc, Some(&profile.0)),
             _proc: Some(proc),
             _profile: Some(profile),
@@ -408,6 +415,20 @@ pub fn pick_target<'a>(targets: &'a [Value], target_id: Option<&str>, want_kind:
         ToolError::new(ErrorCode::NotFound, "the browser has no debuggable target of the required kind")
             .with_remediation("Open a page in the browser, or pass an explicit target_id.")
     })
+}
+
+impl Browser {
+    /// The page a browser tool works on: `target_id`, else the study tab, else the first page. In
+    /// the person's own browser only the study tab: another of their tabs is refused, never read.
+    pub fn page_target<'a>(&self, targets: &'a [Value], target_id: Option<&str>) -> Result<&'a Value, ToolError> {
+        if let (Some(tab), Some(id)) = (self.tab.as_deref(), target_id)
+            && id != tab
+        {
+            return Err(ToolError::invalid(format!("{id:?} is another tab of your own browser; only the study tab is looked at"))
+                .with_remediation("Leave out target_id to use the study tab, or close the study with web_site_close first."));
+        }
+        pick_target(targets, target_id.or(self.tab.as_deref()), Some("page"))
+    }
 }
 
 /// Connect a page/renderer target's WebSocket and build a JSON-RPC client.
@@ -1301,6 +1322,7 @@ mod tests {
             version: String::new(),
             user_agent: String::new(),
             launched: true,
+            tab: None,
             _proc: None,
             _profile: Some(super::BrowserProfile(profile.clone())),
             _watch: None,

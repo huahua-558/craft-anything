@@ -178,6 +178,8 @@ enum EKind {
     VarInit,
     IvarDestroyer,
     IvarInitializer,
+    PropertyWrapperBackingInitializer,
+    PropertyWrapperInitFromProjected,
 }
 
 struct D<'a> {
@@ -1449,6 +1451,8 @@ impl<'a> D<'a> {
                     b'd' => EKind::Deinit,
                     b'E' => EKind::IvarDestroyer,
                     b'e' => EKind::IvarInitializer,
+                    b'P' => EKind::PropertyWrapperBackingInitializer,
+                    b'W' => EKind::PropertyWrapperInitFromProjected,
                     b'U' | b'u' => {
                         let i = self.index()?;
                         let ty = self.pop_type()?;
@@ -1498,7 +1502,13 @@ impl<'a> D<'a> {
                         self.push(N::Entity { kind, ctx: Box::new(ctx), name: None, labels, ty: Some(Box::new(ty)), accessor: None, is_static: false })
                     }
                     _ => {
-                        let ctx = self.pop_context()?;
+                        let ctx = match kind {
+                            EKind::PropertyWrapperBackingInitializer | EKind::PropertyWrapperInitFromProjected => match self.pop()? {
+                                v @ N::Entity { kind: EKind::Var, accessor: Some(_), .. } => v,
+                                _ => return Err("expected a variable".into()),
+                            },
+                            _ => self.pop_context()?,
+                        };
                         self.push(N::Entity { kind, ctx: Box::new(ctx), name: None, labels: Vec::new(), ty: None, accessor: None, is_static: false })
                     }
                 }
@@ -1835,6 +1845,8 @@ fn render(n: &N, depth: usize) -> String {
                 EKind::DeallocDeinit => format!("{c}.__deallocating_deinit"),
                 EKind::IvarDestroyer => format!("{c}.__ivar_destroyer"),
                 EKind::IvarInitializer => format!("{c}.__ivar_initializer"),
+                EKind::PropertyWrapperBackingInitializer => format!("property wrapper backing initializer of {c}"),
+                EKind::PropertyWrapperInitFromProjected => format!("property wrapper init from projected value of {c}"),
                 EKind::Var => {
                     let acc = accessor.filter(|a| !a.is_empty()).map(|a| format!(".{a}")).unwrap_or_default();
                     format!("{c}.{}{acc} : {}", name.clone().unwrap_or_default(), ty.as_ref().map(|t| render(t, d)).unwrap_or_default())

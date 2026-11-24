@@ -3055,6 +3055,12 @@ Owner: open · Status: in progress
       by the variable's name, as `swift-demangle` prints them. For example
       `_$s10ACPToolLib11RemoveTokenV13configuration_WZ` reads "one-time initialization function for configuration".
       — claimed: Chr0mium24, branch bugfix/r3.12-swift-demangle-once-init
+- [x] Swift property-wrapper symbols decode. A symbol ending `vpfP` is the property
+      wrapper backing initializer and `vpfW` is its initializer from the projected value, but the
+      demangler reported both as `unsupported function entity`, so
+      `_$s14PhoneSnippetUI18PlayVoicemailModelV04openA4TextSSvpfP` now reads
+      "property wrapper backing initializer of PhoneSnippetUI.PlayVoicemailModel.openPhoneText : Swift.String".
+      — claimed: Chr0mium24, branch bugfix/r3.12-swift-demangle-prop-wrapper
 - [x] Require a complete Cargo package version before a registry or vendor path becomes Rust dependency evidence.
       — claimed: Afloat16, branch bugfix/r3.12-rust-dependency-versions
 - [x] Swift symbols name the right generic parameter in an associated type. `Qy` numbers its

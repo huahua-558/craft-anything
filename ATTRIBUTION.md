@@ -29,6 +29,12 @@ texts are in the crate's `fonts/` folder.
 | `Hack-Regular.ttf` | Hack (egui's default monospace font) | © 2018 Source Foundry Authors; Bitstream Vera © 2003 Bitstream, Inc.; DejaVu changes public domain | MIT and Bitstream Vera License, `Hack-Regular.txt` |
 | `emoji-icon-font.ttf` | emoji-icon-font | © 2014 John Slegers | MIT, `emoji-icon-font-mit-license.txt` |
 
+## Ignore-matcher controls
+
+The separated-globstar paths in `crates/analysis/tests/gitignore_pattern_rules.rs` are original
+test inputs by Afloat16, under MIT OR Apache-2.0. Their ignore decisions were checked against
+Git's `check-ignore` command; no Git implementation is included.
+
 ## Icons (`assets/icons/`)
 
 | Files | Set | Copyright | Source | Licence |

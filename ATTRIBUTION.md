@@ -50,3 +50,9 @@ the open-source licence; see `docs/brand/LICENSE-brand.txt`.
 Builds made with `CRAFT_FONTS_DIR` (craft-fonts), releases among them, also embed the fonts in
 that folder (all OFL-1.1). Their packages ship each one's licence as `OFL-<font>.txt`; craft-fonts'
 own `ATTRIBUTION.md` names their authors and pinned sources.
+
+## Generated WebAssembly comparison fixtures
+
+| Generator | Fixture | Author | Source and inputs | Licence | How made |
+|---|---|---|---|---|---|
+| `crates/engine/src/tools/wasm_compare_tools.rs`: `resource_module`, `many_table_module`, and `resource_imports_use_independent_index_spaces` | Temporary core modules for memory/table interface comparisons | Afloat16 | Original numeric limits and names, following [WebAssembly Core 3.0 binary limits, memory and table types](https://webassembly.github.io/spec/core/binary/types.html) and the [Threads proposal's shared memory limits](https://github.com/WebAssembly/threads/blob/main/proposals/threads/Overview.md#binary-format) | MIT OR Apache-2.0 | Generated in the committed Rust tests from literal section fields; no external module bytes, assets, or target execution. |

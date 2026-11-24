@@ -1214,7 +1214,9 @@ impl Worker {
 
     fn checks_with_a_retry_now(&self, ws: &Workspace, kind: &dyn kinds::TargetKind, round: u32) -> Result<Vec<CheckResult>, ToolError> {
         let e = match self.run_checks(ws, kind, round) {
-            Err(e) if e.code != ErrorCode::Cancelled => e,
+            Err(e) if e.code == ErrorCode::Cancelled => return Err(e),
+            Err(e) if check::is_unavailable_tool_error(&e) => return Err(unchecked_build_error(e)),
+            Err(e) => e,
             done => return done,
         };
         self.emit(RunEvent::Agent(AgentEvent::Status { text: format!("The check couldn't finish ({}). Trying it once more…", e.message) }));
@@ -1222,8 +1224,7 @@ impl Worker {
             if e.code == ErrorCode::Cancelled {
                 return e;
             }
-            ToolError::new(e.code, format!("The build is finished, but it couldn't be checked: {}", e.message))
-                .with_remediation("Press Try again to check it again. Nothing needs building again.")
+            unchecked_build_error(e)
         })
     }
 
@@ -1593,6 +1594,27 @@ For a plugin's tool, the plugin's `consent` setting in the person's config.toml 
 /// request. Each "Try again" used to start another `max_rounds` of checks, with nothing counting
 /// across runs, so a build that never came up was checked 40 and 49 times (#736).
 pub const NOT_WORKING_CHECK_LIMIT: u32 = 10;
+
+/// Wrap a check error that prevented verifying the finished build, preserving tool-setup
+/// remediation alongside the "Try again" guidance (#2178).
+fn unchecked_build_error(e: ToolError) -> ToolError {
+    const TRY_AGAIN: &str = "Press Try again to check it again. Nothing needs building again.";
+    let remediation = match e.remediation.as_deref().map(str::trim) {
+        Some(fix) if check::is_unavailable_tool_error(&e) && !fix.is_empty() => {
+            if fix.ends_with(['.', '!', '?', ':']) {
+                format!("{fix} {TRY_AGAIN}")
+            } else {
+                format!("{fix}. {TRY_AGAIN}")
+            }
+        }
+        _ => TRY_AGAIN.to_string(),
+    };
+    let mut out = ToolError::new(e.code, format!("The build is finished, but it couldn't be checked: {}", e.message)).with_remediation(remediation);
+    if let Some(details) = e.details {
+        out = out.with_details(details);
+    }
+    out
+}
 
 fn not_working(ws: &Workspace) -> ToolError {
     ToolError::new(ErrorCode::OverLimit, format!("The build still isn't working after {} checks in a row, so it stopped.", ws.manifest.not_working_checks))

@@ -155,7 +155,13 @@ impl KeyStore {
 
     /// The key to use: stored, else the kind's environment variable (when this store reads it).
     pub fn resolve(&self, backend: &str, kind: BackendKind) -> Option<String> {
-        let from_env = self.use_env.then(|| env_var(kind).and_then(|v| std::env::var(v).ok()).filter(|k| !k.trim().is_empty())).flatten();
+        self.resolve_with(backend, kind, |v| std::env::var(v).ok())
+    }
+
+    /// [`Self::resolve`] using a caller-supplied environment lookup so tests can verify precedence
+    /// without mutating process environment variables.
+    pub fn resolve_with(&self, backend: &str, kind: BackendKind, env: impl Fn(&str) -> Option<String>) -> Option<String> {
+        let from_env = self.use_env.then(|| env_var(kind).and_then(env).filter(|k| !k.trim().is_empty())).flatten();
         self.get(backend).or(from_env)
     }
 
@@ -493,5 +499,24 @@ mod tests {
         assert!(s.set("x", " ").is_err());
         assert_eq!(env_var(BackendKind::Openrouter), Some("OPENROUTER_API_KEY"));
         assert_eq!(env_var(BackendKind::Gemini), Some("GEMINI_API_KEY"));
+    }
+
+    /// #1358: a saved key takes precedence over an environment variable, blank env values are
+    /// ignored, and `use_env = false` skips the environment lookup.
+    #[test]
+    fn resolve_with_prefers_stored_key_over_environment_and_ignores_blank_env() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("ai-keys.toml");
+        let store = KeyStore::file_only(file.clone());
+        let env = |v: &str| (v == "OPENAI_API_KEY").then(|| "sk-env-old".to_string());
+        assert_eq!(store.resolve_with("OpenAI", BackendKind::Openai, env).as_deref(), Some("sk-env-old"));
+        assert_eq!(store.resolve_with("OpenAI", BackendKind::Openai, |_| Some("   ".into())), None);
+
+        store.set("OpenAI", "sk-pasted-new").unwrap();
+        assert_eq!(store.resolve_with("OpenAI", BackendKind::Openai, env).as_deref(), Some("sk-pasted-new"));
+
+        let no_env = KeyStore::file_only_without_env(file);
+        assert_eq!(no_env.resolve_with("OpenAI", BackendKind::Openai, env).as_deref(), Some("sk-pasted-new"));
+        assert_eq!(no_env.resolve_with("Other", BackendKind::Openai, env), None);
     }
 }

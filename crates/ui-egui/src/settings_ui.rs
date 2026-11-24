@@ -946,21 +946,23 @@ fn ai(app: &mut CraftApp, ui: &mut Ui) {
                 egui::Label::new(RichText::new(&d.reason).color(t.text_faint).size(theme::CAPTION).line_height(Some(theme::leading(theme::CAPTION)))).wrap(),
             );
             ui.advance_cursor_after_rect(left_ui.min_rect().union(right));
-            // A subscription key is worth pasting even when the environment already has one, so a
-            // different key can be used without restarting the app.
-            let pastable = d.needs_key || d.suggestion.base_url.as_deref().is_some_and(craft_anything_ai::openai::is_opencode_go);
-            if pastable && !configured {
-                ui.horizontal(|ui| {
+            // Hosted API providers accept a pasted key even when the environment already has one,
+            // so a different key can be stored without editing environment variables (#1358).
+            if crate::detect_tabs::can_paste_key(&d) && !configured {
+                ui.add_space(theme::space::XS);
+                ui.horizontal_wrapped(|ui| {
                     let key = app.key_inputs.entry(d.suggestion.name.clone()).or_default();
-                    ui.add(
+                    let r = ui.add(
                         egui::TextEdit::singleline(key)
+                            .id_salt(("detected-key", &d.suggestion.name))
                             .password(true)
                             .hint_text(tr("API key (stored in your system keychain)"))
                             .desired_width(260.0)
                             .frame(widgets::text_field_frame_compact(&Tokens::get(ui.ctx()))),
                     );
+                    widgets::named(r, &trf("{name} key", &[("name", &d.suggestion.name)]));
                     let k = key.trim().to_string();
-                    if widgets::primary_icon(ui, None, "Add", !k.is_empty()).clicked() && !k.is_empty() {
+                    if widgets::primary_icon(ui, None, if d.needs_key { "Add" } else { "Add with key" }, !k.is_empty()).clicked() && !k.is_empty() {
                         // The key goes to the keychain; the app keeps no copy of it.
                         app.key_inputs.remove(&d.suggestion.name);
                         app.add_backend(d.suggestion.clone(), Some(k));
@@ -2020,5 +2022,266 @@ mod model_options_tests {
         assert!(text.contains("new-model") && text.contains("Context window") && text.contains("Thinking depth"), "{text}");
         assert_eq!(app.model_tuning["Copilot test"].cli_model.as_deref(), Some("new-model"));
         assert_eq!(app.model_tuning["Copilot test"].error, None);
+    }
+
+    /// #1358: an API provider detected from an environment variable still offers a labelled key
+    /// field and distinct button in Settings → AI so a person can paste a different key instead of
+    /// using the environment's, while local servers and harnesses do not show a key field.
+    #[test]
+    fn env_detected_providers_allow_pasting_a_custom_key_in_settings() {
+        use craft_anything_ai::{AiHub, BackendConfig, BackendKind, Detected, KeyStore};
+        use egui_kittest::{
+            Harness,
+            kittest::{NodeT, Queryable},
+        };
+
+        let tmp = tempfile::tempdir().unwrap();
+        let keys_path = tmp.path().join("keys.toml");
+        let mut app = crate::demo::app(crate::demo::engine(craft_anything_engine::Mode::Experienced, true));
+        app.hub = std::sync::Arc::new(AiHub::with_stores(app.engine.clone(), tmp.path().join("settings.toml"), KeyStore::file_only(keys_path.clone())));
+        app.backends.clear();
+        app.detected = Some(vec![
+            Detected {
+                suggestion: BackendConfig {
+                    name: "OpenAI".into(),
+                    kind: BackendKind::Openai,
+                    model: "gpt-4o".into(),
+                    base_url: None,
+                    ssh_host: None,
+                    enabled: true,
+                },
+                reason: "Found OPENAI_API_KEY in your environment".into(),
+                needs_key: false,
+            },
+            Detected {
+                suggestion: BackendConfig {
+                    name: "Requesty".into(),
+                    kind: BackendKind::OpenaiCompatible,
+                    model: "openai/gpt-4o".into(),
+                    base_url: Some("https://router.requesty.ai/v1".into()),
+                    ssh_host: None,
+                    enabled: true,
+                },
+                reason: "Found REQUESTY_API_KEY in your environment".into(),
+                needs_key: false,
+            },
+            Detected {
+                suggestion: BackendConfig {
+                    name: "Gemini (Google AI Studio)".into(),
+                    kind: BackendKind::Gemini,
+                    model: "gemini-2.5-flash".into(),
+                    base_url: None,
+                    ssh_host: None,
+                    enabled: true,
+                },
+                reason: "Paste a key from Google AI Studio.".into(),
+                needs_key: true,
+            },
+            Detected {
+                suggestion: BackendConfig {
+                    name: "Ollama".into(),
+                    kind: BackendKind::OpenaiCompatible,
+                    model: "llama3.2".into(),
+                    base_url: Some("http://127.0.0.1:11434/v1".into()),
+                    ssh_host: None,
+                    enabled: true,
+                },
+                reason: "Found Ollama running with 2 models.".into(),
+                needs_key: false,
+            },
+            Detected {
+                suggestion: BackendConfig {
+                    name: "Claude Code".into(),
+                    kind: BackendKind::AgentCli,
+                    model: "claude-code".into(),
+                    base_url: None,
+                    ssh_host: None,
+                    enabled: true,
+                },
+                reason: "Found the claude command on this computer.".into(),
+                needs_key: false,
+            },
+        ]);
+
+        let mut ready = false;
+        let mut h = Harness::builder().with_size(egui::vec2(720.0, 900.0)).build_ui_state(
+            move |ui, app: &mut CraftApp| {
+                if !ready {
+                    CraftApp::setup_context(ui.ctx());
+                    ready = true;
+                    return;
+                }
+                egui::ScrollArea::vertical().show(ui, |ui| ai(app, ui));
+            },
+            app,
+        );
+        h.run_steps(3);
+
+        // Read the AccessKit tree: hosted API providers expose labelled editable key fields, while
+        // local servers do not.
+        let openai_field = h.get_by_label("OpenAI key");
+        assert_eq!(openai_field.accesskit_node().role(), egui::accesskit::Role::PasswordInput);
+        assert!(!openai_field.accesskit_node().is_disabled());
+        assert_eq!(h.get_by_label("Requesty key").accesskit_node().role(), egui::accesskit::Role::PasswordInput);
+        assert!(h.query_by_label("Ollama key").is_none(), "local servers must not show an API key field");
+
+        // The paste-key button has its own label distinct from the environment-key Add button, and
+        // starts disabled until a non-empty key is entered; a `needs_key: true` card keeps "Add".
+        let enabled_adds = h.query_all_by_label("Add").filter(|n| !n.accesskit_node().is_disabled()).count();
+        assert_eq!(enabled_adds, 3, "OpenAI, Requesty and Ollama each have one enabled environment/direct Add button");
+        let disabled_adds = h.query_all_by_label("Add").filter(|n| n.accesskit_node().is_disabled()).count();
+        assert_eq!(disabled_adds, 2, "needs_key Gemini card and empty manual server form each show a disabled Add button");
+        let key_adds: Vec<_> = h.query_all_by_label("Add with key").collect();
+        assert_eq!(key_adds.len(), 2, "OpenAI and Requesty each have a distinct Add with key button");
+        assert!(key_adds[0].accesskit_node().is_disabled(), "Add with key is disabled while empty");
+
+        // Whitespace-only input keeps Add with key disabled.
+        h.get_by_label("OpenAI key").focus();
+        h.run();
+        h.get_by_label("OpenAI key").type_text("   ");
+        h.run_steps(2);
+        assert!(h.query_all_by_label("Add with key").next().unwrap().accesskit_node().is_disabled(), "whitespace-only key must keep Add with key disabled");
+
+        // Enter a custom key for OpenAI and click its Add with key button.
+        h.get_by_label("OpenAI key").type_text("sk-custom-override");
+        h.run_steps(2);
+        let openai_key_add = h.query_all_by_label("Add with key").next().expect("OpenAI Add with key button");
+        assert!(!openai_key_add.accesskit_node().is_disabled(), "Add with key enables once text is entered");
+        openai_key_add.click();
+        h.run_steps(2);
+
+        let started = std::time::Instant::now();
+        while !h.state().jobs.list.is_empty() && started.elapsed() < std::time::Duration::from_secs(5) {
+            let done = h.state_mut().jobs.poll();
+            for finished in done {
+                h.state_mut().handle_done(finished);
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(h.state().hub.backends().iter().any(|b| b.name == "OpenAI"), "OpenAI backend was added");
+        assert!(h.state().hub.saved_backend_key("OpenAI").unwrap(), "pasted key was saved to the key store");
+        let store = KeyStore::file_only(keys_path.clone());
+        assert_eq!(
+            store.resolve_with("OpenAI", BackendKind::Openai, |v| (v == "OPENAI_API_KEY").then(|| "sk-stale-env".into())).as_deref(),
+            Some("sk-custom-override"),
+            "pasted key must win over a stale OPENAI_API_KEY environment variable"
+        );
+        assert_eq!(
+            store.resolve_with("Unpasted", BackendKind::Openai, |v| (v == "OPENAI_API_KEY").then(|| "sk-from-env".into())).as_deref(),
+            Some("sk-from-env"),
+            "a backend added without pasting still falls back to the environment variable"
+        );
+        let stored = std::fs::read_to_string(&keys_path).unwrap_or_default();
+        assert!(stored.contains("sk-custom-override"), "saved key matches pasted text: {stored}");
+        assert!(h.state().key_inputs.get("OpenAI").is_none_or(String::is_empty), "key draft is cleared after submit: {:?}", h.state().key_inputs.get("OpenAI"));
+
+        // Also paste a custom key for Requesty (hosted OpenaiCompatible provider).
+        h.get_by_label("Requesty key").focus();
+        h.run();
+        h.get_by_label("Requesty key").type_text("sk-requesty-custom");
+        h.run_steps(2);
+        let requesty_add = h.query_all_by_label("Add with key").find(|n| !n.accesskit_node().is_disabled()).expect("enabled Requesty Add with key");
+        requesty_add.click();
+        h.run_steps(2);
+        let started = std::time::Instant::now();
+        while !h.state().jobs.list.is_empty() && started.elapsed() < std::time::Duration::from_secs(5) {
+            let done = h.state_mut().jobs.poll();
+            for finished in done {
+                h.state_mut().handle_done(finished);
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(h.state().hub.saved_backend_key("Requesty").unwrap(), "pasted Requesty key was saved");
+        assert_eq!(store.get("Requesty").as_deref(), Some("sk-requesty-custom"));
+
+        // Switch to Harnesses and confirm coding agents do not get an API key field.
+        h.get_by_label("Harnesses (1)").click();
+        h.run_steps(2);
+        assert!(h.query_by_label("Claude Code key").is_none(), "harnesses must not show an API key field");
+    }
+
+    /// #1358: first-run Brain step uses the same rule as Settings → AI for pasting a custom key on
+    /// an env-detected provider and labels its key field in the accessibility tree.
+    #[test]
+    fn first_run_allows_pasting_a_custom_key_for_env_detected_provider() {
+        use craft_anything_ai::{AiHub, BackendConfig, BackendKind, Detected, KeyStore};
+        use egui_kittest::{
+            Harness,
+            kittest::{NodeT, Queryable},
+        };
+
+        let tmp = tempfile::tempdir().unwrap();
+        let keys_path = tmp.path().join("keys.toml");
+        let mut app = crate::demo::app(crate::demo::engine(craft_anything_engine::Mode::Beginner, true));
+        app.hub = std::sync::Arc::new(AiHub::with_stores(app.engine.clone(), tmp.path().join("settings.toml"), KeyStore::file_only(keys_path.clone())));
+        app.backends.clear();
+        app.state.first_run = crate::state::FirstRunStep::Brain;
+        app.detected = Some(vec![
+            Detected {
+                suggestion: BackendConfig {
+                    name: "OpenAI".into(),
+                    kind: BackendKind::Openai,
+                    model: "gpt-4o".into(),
+                    base_url: None,
+                    ssh_host: None,
+                    enabled: true,
+                },
+                reason: "Found OPENAI_API_KEY in your environment".into(),
+                needs_key: false,
+            },
+            Detected {
+                suggestion: BackendConfig {
+                    name: "Ollama".into(),
+                    kind: BackendKind::OpenaiCompatible,
+                    model: "llama3.2".into(),
+                    base_url: Some("http://127.0.0.1:11434/v1".into()),
+                    ssh_host: None,
+                    enabled: true,
+                },
+                reason: "Found Ollama running.".into(),
+                needs_key: false,
+            },
+        ]);
+
+        let mut ready = false;
+        let mut h = Harness::builder().with_size(egui::vec2(820.0, 900.0)).build_ui_state(
+            move |ui, app: &mut CraftApp| {
+                if !ready {
+                    CraftApp::setup_context(ui.ctx());
+                    ready = true;
+                    return;
+                }
+                crate::first_run::show(app, ui);
+            },
+            app,
+        );
+        h.run_steps(3);
+
+        let field = h.get_by_label("OpenAI key");
+        assert_eq!(field.accesskit_node().role(), egui::accesskit::Role::PasswordInput);
+        assert!(h.query_by_label("Ollama key").is_none());
+        let use_this_count = h.query_all_by_label("Use this").filter(|n| !n.accesskit_node().is_disabled()).count();
+        assert_eq!(use_this_count, 2, "OpenAI and Ollama each expose an enabled Use this button");
+        assert!(h.get_by_label("Connect").accesskit_node().is_disabled());
+
+        h.get_by_label("OpenAI key").focus();
+        h.run();
+        h.get_by_label("OpenAI key").type_text("sk-first-run-key");
+        h.run_steps(2);
+        assert!(!h.get_by_label("Connect").accesskit_node().is_disabled());
+        h.get_by_label("Connect").click();
+        h.run_steps(2);
+
+        let started = std::time::Instant::now();
+        while !h.state().jobs.list.is_empty() && started.elapsed() < std::time::Duration::from_secs(5) {
+            let done = h.state_mut().jobs.poll();
+            for finished in done {
+                h.state_mut().handle_done(finished);
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(h.state().hub.saved_backend_key("OpenAI").unwrap());
+        let stored = std::fs::read_to_string(&keys_path).unwrap_or_default();
+        assert!(stored.contains("sk-first-run-key"), "{stored}");
     }
 }

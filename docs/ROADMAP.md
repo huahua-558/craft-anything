@@ -3652,6 +3652,9 @@ Owner: open · Status: in progress
       or manifest, ASAR, text). Fat Mach-O files that start 0xCAFEBABF are now recognized.
       — claimed: FredApps, branch refactor/target-kind-craft-sniff
 
+- [x] Decode Swift `TE`/`TF` suffixes as distributed thunk and distributed accessor (and the `Tu` async-function-pointer form), followed by the base function.
+      — claimed: Chr0mium24, branch bugfix/r3.12-swift-demangle-distributed
+
 ### R3.13 Web inspection correctness
 Owner: open · Status: in progress
 - [x] Decode character references in HTML page titles before returning their displayed text.

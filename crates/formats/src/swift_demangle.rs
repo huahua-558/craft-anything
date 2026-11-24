@@ -1335,6 +1335,18 @@ impl<'a> D<'a> {
                     b'O' => "@nonobjc",
                     b'q' => "method descriptor for",
                     b'j' => "dispatch thunk of",
+                    b'E' => {
+                        if !matches!(self.stack.last(), Some(N::Entity { .. } | N::Global { .. })) {
+                            return Err("distributed thunk of a non-function".into());
+                        }
+                        "distributed thunk"
+                    }
+                    b'F' => {
+                        if !matches!(self.stack.last(), Some(N::Entity { .. } | N::Global { .. })) {
+                            return Err("distributed accessor for a non-function".into());
+                        }
+                        "distributed accessor for"
+                    }
                     b'D' => "dynamic",
                     b'd' => "direct method reference to",
                     b'A' => "partial apply forwarder for",

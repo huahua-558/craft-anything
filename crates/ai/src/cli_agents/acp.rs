@@ -1,3 +1,5 @@
+// Modifications (c) 2026 SuperSfera LLC, MIT OR Apache-2.0.
+
 //! Agents that speak the Agent Client Protocol (ACP: JSON-RPC 2.0, one message per line on the
 //! agent's stdin/stdout) as one more [`Conversation`]. One agent process serves the whole chat:
 //! `initialize`, then `session/new` (or `session/load` to continue) with our MCP server, then one
@@ -34,6 +36,7 @@ pub const ACP_AGENTS: &[(&str, &[&str])] = &[
     // Flags that belong to this mode (`--model`, `--no-leader`) go between `agent` and `stdio`.
     ("grok", &["agent"]),
     ("devin", &["acp"]),
+    ("cursor-agent", &["acp"]),
 ];
 
 /// Agents whose ACP mode takes the backend's model (`cli_model`), and the flag after the ACP
@@ -180,6 +183,12 @@ pub struct AcpCore {
     config_options: Vec<Value>,
     /// `(configId, value)` applied in order after the session opens, before it is ready.
     config_queue: VecDeque<(String, String)>,
+    /// When set, `initialize` must advertise an agent version on or after this date, so a build
+    /// does not start on an ACP agent known to ignore `session/new` MCP servers. (From #735.)
+    mcp_since: Option<(u16, u8, u8)>,
+    /// Cursor-style `YYYY.MM.DD` date parsed from `--version` before start, used when
+    /// `initialize` omits `agentInfo.version` so an old binary still hits `mcp_since`.
+    probed_version: Option<(u16, u8, u8)>,
     /// A loaded session already has history. Set when the session response arrives, and copied
     /// onto [`session_has_history`](Self::session_has_history) once the config queue is done.
     opened_with_history: bool,
@@ -222,6 +231,8 @@ impl AcpCore {
             current_model: String::new(),
             config_options: Vec::new(),
             config_queue: VecDeque::new(),
+            mcp_since: None,
+            probed_version: None,
             opened_with_history: false,
             typed_mcp: false,
             auth: None,
@@ -444,6 +455,14 @@ impl AcpCore {
         let result = msg.get("result").unwrap_or(&Value::Null);
         match kind {
             Pending::Initialize => {
+                if let Some(min) = self.mcp_since
+                    && agent_version_too_old(result, self.probed_version, min)
+                {
+                    return self.fail(
+                        format!("{} is too old to run Craft Anything's tools over ACP.", self.agent_name),
+                        Some(format!("Update {}, then try again.", self.agent_name)),
+                    );
+                }
                 self.can_load = result.pointer("/agentCapabilities/loadSession").and_then(Value::as_bool).unwrap_or(false);
                 // `authenticate` goes only to an agent that advertises the method its stored key
                 // authenticates with (`ACP_KEY_AGENTS`): a key never goes under another method,
@@ -477,6 +496,13 @@ impl AcpCore {
                 }
                 if self.session.is_none() {
                     return self.fail(format!("{} started no session", self.agent_name), None);
+                }
+                // Questions send no MCP server, so an empty report there is expected. A build or
+                // analysis that asked for one must not continue when the agent says none started.
+                if !self.question
+                    && let Some(why) = mcp_not_started(result, super::MCP_NAME)
+                {
+                    return self.fail(format!("{} started no Craft Anything tools.", self.agent_name), Some(why));
                 }
                 // Ready waits until the queued overrides are applied. Grok's `--model` flag does
                 // not survive `session/new`; the saved default comes back and has to be set here.
@@ -610,6 +636,59 @@ impl AcpCore {
     }
 }
 
+/// The advertised agent version in an `initialize` result (v1 `agentInfo`, v2 `info`).
+fn advertised_version(result: &Value) -> Option<&str> {
+    result.pointer("/agentInfo/version").or_else(|| result.pointer("/info/version")).and_then(Value::as_str)
+}
+
+/// The `YYYY.MM.DD` date at the start of a Cursor-style version (`2026.06.04-5fd875e`).
+pub(super) fn version_date(s: &str) -> Option<(u16, u8, u8)> {
+    let date = s.split('-').next().unwrap_or(s);
+    let mut parts = date.split('.');
+    let year = parts.next()?.parse().ok()?;
+    let month = parts.next()?.parse().ok()?;
+    let day = parts.next()?.parse().ok()?;
+    if parts.next().is_some() || !(1..=12).contains(&month) || !(1..=31).contains(&day) {
+        return None;
+    }
+    Some((year, month, day))
+}
+
+fn agent_version_too_old(result: &Value, probed: Option<(u16, u8, u8)>, min: (u16, u8, u8)) -> bool {
+    if let Some(version) = advertised_version(result) {
+        return version_date(version).is_none_or(|got| got < min);
+    }
+    // Cursor's `agent acp` omits a version in `initialize`, so compare the date parsed from
+    // `--version` against `min` when available while still accepting versionless/unknown probes.
+    probed.is_some_and(|got| got < min)
+}
+
+/// When the session result reports MCP startup, why our server is missing or failed.
+/// A missing field is not a report. An empty list is: the agent named no server at all.
+fn mcp_not_started(result: &Value, name: &str) -> Option<String> {
+    let servers = result.get("mcpServers").or_else(|| result.pointer("/_meta/mcpServers"))?.as_array()?;
+    if servers.is_empty() {
+        return Some("It reported no MCP servers. Update the agent so it starts the MCP server sent with the session, then try again.".into());
+    }
+    let Some(server) = servers.iter().find(|server| server.get("name").and_then(Value::as_str) == Some(name)) else {
+        return Some(
+            "It started other MCP servers but not Craft Anything's. Update the agent so it starts the MCP server sent with the session, then try again.".into(),
+        );
+    };
+    let status = server.get("status").or_else(|| server.get("state")).and_then(Value::as_str);
+    let failed = server.get("error").is_some_and(|error| !error.is_null());
+    match (status, failed) {
+        (None, false) => None,
+        (Some(status), _) if ["connected", "ok", "ready", "started"].contains(&status) => None,
+        (Some(status), _) => {
+            Some(format!("It reported Craft Anything's tools as {status}. Update the agent so it starts the MCP server sent with the session, then try again."))
+        }
+        (None, true) => {
+            Some("It reported Craft Anything's tools as failed. Update the agent so it starts the MCP server sent with the session, then try again.".into())
+        }
+    }
+}
+
 /// The finished event for a tool call whose status is final.
 fn finished(u: &Value, id: &str, tool: String) -> Option<AgentEvent> {
     let ok = match u.get("status").and_then(Value::as_str)? {
@@ -685,14 +764,15 @@ pub struct AcpConversation {
     mcp: McpCommand,
     resume: Option<String>,
     shared: Arc<Mutex<Option<Shared>>>,
-    proc: Option<RunningProcess>,
+    proc: Arc<Mutex<Option<RunningProcess>>>,
     tx: Sender<AgentEvent>,
     rx: Receiver<AgentEvent>,
     busy: Arc<AtomicBool>,
+    start_cancelled: Arc<AtomicBool>,
     approver: Option<Approver>,
     preamble: String,
     logs: Option<PathBuf>,
-    failure: Option<TurnFailure>,
+    failure: Arc<Mutex<Option<TurnFailure>>>,
     /// Suppress MCP attachment and refuse permission requests; startup flags restrict native tools.
     question: bool,
     /// Report invalid backend settings through the conversation before starting a child process.
@@ -704,6 +784,129 @@ pub struct AcpConversation {
     /// The backend's stored key and its `authMethods` id, for an agent that asks the host to
     /// `authenticate` (`ACP_KEY_AGENTS`: Devin).
     auth: Option<(String, String)>,
+}
+
+/// Everything the background startup thread needs so `--version` probing and process launch never
+/// run on the UI thread.
+#[derive(Clone)]
+struct AcpStart {
+    program: String,
+    args: Vec<String>,
+    adapter: Arc<dyn super::AgentAdapter>,
+    agent: String,
+    backend: String,
+    cwd: PathBuf,
+    mcp: McpCommand,
+    resume: Option<String>,
+    shared: SharedRef,
+    proc: Arc<Mutex<Option<RunningProcess>>>,
+    tx: Sender<AgentEvent>,
+    busy: Arc<AtomicBool>,
+    approver: Option<Approver>,
+    question: bool,
+    validation_error: Option<craft_anything_evidence::ToolError>,
+    access_error: Option<craft_anything_evidence::ToolError>,
+    session_config: Vec<(String, String)>,
+    auth: Option<(String, String)>,
+}
+
+impl AcpStart {
+    fn start_process(
+        &self,
+        initial_prompt: Option<(String, Option<String>)>,
+        cancelled: Option<&AtomicBool>,
+    ) -> Result<(), craft_anything_evidence::ToolError> {
+        if let Some(error) = self.validation_error.clone().or_else(|| self.access_error.clone()) {
+            return Err(error);
+        }
+        let resume = {
+            let mut g = self.shared.lock().unwrap_or_else(PoisonError::into_inner);
+            let r = g.as_ref().and_then(|s| s.core.session_id()).or_else(|| self.resume.clone());
+            // Clear any exited session before probing so `stop()` cannot emit a duplicate TurnDone.
+            *g = None;
+            r
+        };
+        // `agent` may be Grok Build or Cursor's CLI: ask the program which, before starting it.
+        let probed_version = if let Some(want) = self.adapter.identity()
+            && self.program != "ssh"
+        {
+            super::probe_identity(&self.program, want)?
+        } else {
+            None
+        };
+        if cancelled.is_some_and(|c| c.load(Ordering::SeqCst)) {
+            return Err(craft_anything_evidence::ToolError::new(craft_anything_evidence::ErrorCode::Cancelled, "Stopped."));
+        }
+        let name = display_for(&self.agent);
+        let mut core = AcpCore::new(&self.backend, &self.agent, &name, self.cwd.clone(), self.mcp.clone(), resume).with_auth(self.auth.clone());
+        core.question = self.question;
+        core.sign_in_fix = self.adapter.sign_in_fix();
+        core.typed_mcp = self.adapter.acp_mcp_stdio_type();
+        core.config_queue = VecDeque::from(self.session_config.clone());
+        core.probed_version = probed_version;
+        if !self.question {
+            core.mcp_since = self.adapter.acp_mcp_since();
+        }
+        if self.approver.is_some() {
+            core = core.deciding();
+        }
+        if let Some((text, continuation)) = initial_prompt {
+            core.queued.push_back(QueuedPrompt { text, continuation });
+        }
+        let (shared, tx, busy) = (self.shared.clone(), self.tx.clone(), self.busy.clone());
+        let shared_err = self.shared.clone();
+        let tx_err = tx.clone();
+        let mut proc = self
+            .adapter
+            .process(&self.program)
+            .args(&self.args)
+            .cwd(&self.cwd)
+            // Our own CLI, started from inside the agent, calls tools as an agent (not the person).
+            .env(craft_anything_engine::AGENT_ENV, "1")
+            .stdin(StdinMode::Piped)
+            // One process serves the whole chat; a builder turn may take hours.
+            .timeout(Duration::from_secs(24 * 3600))
+            .stdout_cap(4 << 20)
+            .stderr_cap(1 << 20)
+            .on_stdout_line(move |l| {
+                let mut g = shared.lock().unwrap_or_else(PoisonError::into_inner);
+                if let Some(s) = g.as_mut() {
+                    let outs = s.core.line(l);
+                    s.apply(outs, &shared, &tx, &busy);
+                }
+            })
+            .on_stderr_line(move |l| {
+                if !l.trim().is_empty() {
+                    let _ = tx_err.send(AgentEvent::Output { text: l.to_string() });
+                }
+                let mut g = shared_err.lock().unwrap_or_else(PoisonError::into_inner);
+                if let Some(s) = g.as_mut() {
+                    if s.stderr.len() >= 20 {
+                        s.stderr.pop_front();
+                    }
+                    s.stderr.push_back(l.to_string());
+                }
+            })
+            .label(name.clone())
+            .remediation(format!("Install {name}, or choose its program in Settings → AI."))
+            .spawn()?;
+        let stdin = proc.take_stdin();
+        {
+            let mut g = self.shared.lock().unwrap_or_else(PoisonError::into_inner);
+            if cancelled.is_some_and(|c| c.load(Ordering::SeqCst)) {
+                drop(g);
+                proc.kill_and_wait(Duration::from_secs(3));
+                return Err(craft_anything_evidence::ToolError::new(craft_anything_evidence::ErrorCode::Cancelled, "Stopped."));
+            }
+            *self.proc.lock().unwrap_or_else(PoisonError::into_inner) = Some(proc);
+            let mut s = Shared { core, stdin, stderr: VecDeque::new(), approver: self.approver.clone() };
+            let outs = s.core.start();
+            s.apply(outs, &self.shared, &self.tx, &self.busy);
+            *g = Some(s);
+        }
+        let _ = self.tx.send(AgentEvent::Status { text: "Usage totals are unavailable over ACP. Check usage and billing in the agent CLI.".into() });
+        Ok(())
+    }
 }
 
 impl AcpConversation {
@@ -832,14 +1035,15 @@ impl AcpConversation {
             mcp,
             resume,
             shared: Arc::default(),
-            proc: None,
+            proc: Arc::default(),
             tx,
             rx,
             busy: Arc::default(),
+            start_cancelled: Arc::default(),
             approver: None,
             preamble: String::new(),
             logs: None,
-            failure: None,
+            failure: Arc::default(),
             question: false,
             validation_error: None,
             access_error: None,
@@ -852,69 +1056,32 @@ impl AcpConversation {
         self.shared.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    /// Start the agent and send `initialize`.
+    fn start_spec(&self) -> AcpStart {
+        AcpStart {
+            program: self.program.clone(),
+            args: self.args.clone(),
+            adapter: self.adapter.clone(),
+            agent: self.agent.clone(),
+            backend: self.backend.clone(),
+            cwd: self.cwd.clone(),
+            mcp: self.mcp.clone(),
+            resume: self.resume.clone(),
+            shared: self.shared.clone(),
+            proc: self.proc.clone(),
+            tx: self.tx.clone(),
+            busy: self.busy.clone(),
+            approver: self.approver.clone(),
+            question: self.question,
+            validation_error: self.validation_error.clone(),
+            access_error: self.access_error.clone(),
+            session_config: self.session_config.clone(),
+            auth: self.auth.clone(),
+        }
+    }
+
+    /// Start the agent and send `initialize` (called from already off-UI metadata discovery).
     fn spawn(&mut self) -> Result<(), craft_anything_evidence::ToolError> {
-        if let Some(error) = self.validation_error.clone().or_else(|| self.access_error.clone()) {
-            return Err(error);
-        }
-        let name = display_for(&self.agent);
-        let resume = self.lock().as_ref().and_then(|s| s.core.session_id()).or_else(|| self.resume.clone());
-        let mut core = AcpCore::new(&self.backend, &self.agent, &name, self.cwd.clone(), self.mcp.clone(), resume).with_auth(self.auth.clone());
-        core.question = self.question;
-        core.sign_in_fix = self.adapter.sign_in_fix();
-        core.typed_mcp = self.adapter.acp_mcp_stdio_type();
-        core.config_queue = VecDeque::from(self.session_config.clone());
-        if self.approver.is_some() {
-            core = core.deciding();
-        }
-        *self.lock() = Some(Shared { core, stdin: None, stderr: VecDeque::new(), approver: self.approver.clone() });
-        let (shared, tx, busy) = (self.shared.clone(), self.tx.clone(), self.busy.clone());
-        let shared_err = self.shared.clone();
-        let tx_err = tx.clone();
-        let mut proc = self
-            .adapter
-            .process(&self.program)
-            .args(&self.args)
-            .cwd(&self.cwd)
-            // Our own CLI, started from inside the agent, calls tools as an agent (not the person).
-            .env(craft_anything_engine::AGENT_ENV, "1")
-            .stdin(StdinMode::Piped)
-            // One process serves the whole chat; a builder turn may take hours.
-            .timeout(Duration::from_secs(24 * 3600))
-            .stdout_cap(4 << 20)
-            .stderr_cap(1 << 20)
-            .on_stdout_line(move |l| {
-                let mut g = shared.lock().unwrap_or_else(PoisonError::into_inner);
-                if let Some(s) = g.as_mut() {
-                    let outs = s.core.line(l);
-                    s.apply(outs, &shared, &tx, &busy);
-                }
-            })
-            .on_stderr_line(move |l| {
-                if !l.trim().is_empty() {
-                    let _ = tx_err.send(AgentEvent::Output { text: l.to_string() });
-                }
-                let mut g = shared_err.lock().unwrap_or_else(PoisonError::into_inner);
-                if let Some(s) = g.as_mut() {
-                    if s.stderr.len() >= 20 {
-                        s.stderr.pop_front();
-                    }
-                    s.stderr.push_back(l.to_string());
-                }
-            })
-            .label(name.clone())
-            .remediation(format!("Install {name}, or choose its program in Settings → AI."))
-            .spawn()?;
-        let stdin = proc.take_stdin();
-        self.proc = Some(proc);
-        let mut g = self.lock();
-        if let Some(s) = g.as_mut() {
-            s.stdin = stdin;
-            let outs = s.core.start();
-            s.apply(outs, &self.shared, &self.tx, &self.busy);
-        }
-        let _ = self.tx.send(AgentEvent::Status { text: "Usage totals are unavailable over ACP. Check usage and billing in the agent CLI.".into() });
-        Ok(())
+        self.start_spec().start_process(None, None)
     }
 
     fn with_core(&mut self, f: impl FnOnce(&mut AcpCore) -> Vec<Out>) {
@@ -933,14 +1100,44 @@ impl AcpConversation {
             });
             return;
         }
-        self.failure = None;
-        let running = self.proc.as_mut().is_some_and(|p| !p.is_finished());
+        *self.failure.lock().unwrap_or_else(PoisonError::into_inner) = None;
+        let text = format!("{}{text}", self.preamble);
+        let continuation = retry.then(|| format!("{}{}", self.preamble, crate::failure::CONTINUE_TURN));
+        let running = self.proc.lock().unwrap_or_else(PoisonError::into_inner).as_mut().is_some_and(|p| !p.is_finished());
         if !running {
+            self.start_cancelled.store(false, Ordering::SeqCst);
             let _ = self.tx.send(AgentEvent::Status { text: format!("Starting {}…", display_for(&self.agent)) });
-            if let Err(e) = self.spawn() {
+            let start = self.start_spec();
+            let failure = self.failure.clone();
+            let cancelled = self.start_cancelled.clone();
+            let spawned = std::thread::Builder::new().name("acp-start".into()).spawn(move || {
+                let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| start.start_process(Some((text, continuation)), Some(&cancelled))));
+                let err = match res {
+                    Ok(Ok(())) => return,
+                    Ok(Err(e)) => Some(e),
+                    Err(_) => Some(craft_anything_evidence::ToolError::unavailable("The agent starter hit a bug and stopped safely.")),
+                };
+                if let Some(e) = err {
+                    if e.code == craft_anything_evidence::ErrorCode::Cancelled {
+                        let _ = start.tx.send(AgentEvent::Status { text: "Stopped.".into() });
+                    } else {
+                        *failure.lock().unwrap_or_else(PoisonError::into_inner) = Some(TurnFailure::from_process(&e));
+                        let _ = start.tx.send(AgentEvent::Error { message: e.message, remediation: e.remediation, log: None });
+                    }
+                    start.busy.store(false, Ordering::SeqCst);
+                    let _ = start.tx.send(AgentEvent::TurnDone {
+                        backend: start.backend.clone(),
+                        input_tokens: 0,
+                        output_tokens: 0,
+                        tokens_unknown: true,
+                        cost_usd: None,
+                        cost_is_estimate: false,
+                    });
+                }
+            });
+            if spawned.is_err() {
                 self.busy.store(false, Ordering::SeqCst);
-                self.failure = Some(TurnFailure::from_process(&e));
-                let _ = self.tx.send(AgentEvent::Error { message: e.message, remediation: e.remediation, log: None });
+                let _ = self.tx.send(AgentEvent::Error { message: "Couldn't start a worker thread.".into(), remediation: None, log: None });
                 let _ = self.tx.send(AgentEvent::TurnDone {
                     backend: self.backend.clone(),
                     input_tokens: 0,
@@ -949,18 +1146,16 @@ impl AcpConversation {
                     cost_usd: None,
                     cost_is_estimate: false,
                 });
-                return;
             }
+            return;
         }
-        let text = format!("{}{text}", self.preamble);
-        let continuation = retry.then(|| format!("{}{}", self.preamble, crate::failure::CONTINUE_TURN));
         self.with_core(|c| c.queue_prompt(&text, continuation));
     }
 }
 
 impl Conversation for AcpConversation {
     fn last_failure(&self) -> Option<TurnFailure> {
-        self.failure.or_else(|| self.lock().as_ref().and_then(|s| s.core.failure))
+        (*self.failure.lock().unwrap_or_else(PoisonError::into_inner)).or_else(|| self.lock().as_ref().and_then(|s| s.core.failure))
     }
 
     fn send(&mut self, text: &str) {
@@ -984,10 +1179,13 @@ impl Conversation for AcpConversation {
     fn poll(&mut self) -> Vec<AgentEvent> {
         let mut events: Vec<AgentEvent> = self.rx.try_iter().collect();
         // An agent that exits mid-message would otherwise leave the conversation busy forever.
-        if self.busy.load(Ordering::SeqCst) && self.proc.as_mut().is_some_and(RunningProcess::is_finished) {
+        let finished =
+            self.busy.load(Ordering::SeqCst) && self.proc.lock().unwrap_or_else(PoisonError::into_inner).as_mut().is_some_and(RunningProcess::is_finished);
+        if finished {
             self.busy.store(false, Ordering::SeqCst);
             let ready = self.lock().as_ref().is_some_and(|s| s.core.ready);
-            self.failure = Some(TurnFailure::new(if ready { FailureKind::Transient } else { FailureKind::Unknown }));
+            *self.failure.lock().unwrap_or_else(PoisonError::into_inner) =
+                Some(TurnFailure::new(if ready { FailureKind::Transient } else { FailureKind::Unknown }));
             let tail = self.lock().as_ref().map(|s| s.stderr.iter().cloned().collect::<Vec<_>>().join("\n")).unwrap_or_default();
             events.extend(self.rx.try_iter());
             let command = craft_anything_platform::process::printable_command(std::ffi::OsStr::new(&self.program), &self.args);
@@ -1029,6 +1227,7 @@ impl Conversation for AcpConversation {
     }
 
     fn stop(&mut self) {
+        self.start_cancelled.store(true, Ordering::SeqCst);
         self.with_core(AcpCore::cancel);
     }
 
@@ -1039,7 +1238,10 @@ impl Conversation for AcpConversation {
 
 impl Drop for AcpConversation {
     fn drop(&mut self) {
-        if let Some(mut p) = self.proc.take() {
+        self.start_cancelled.store(true, Ordering::SeqCst);
+        *self.lock() = None;
+        let proc = self.proc.lock().unwrap_or_else(PoisonError::into_inner).take();
+        if let Some(mut p) = proc {
             p.kill_and_wait(Duration::from_secs(3));
         }
     }
@@ -1696,5 +1898,243 @@ printf '{"jsonrpc":"2.0","id":%s,"result":{"stopReason":"end_turn"}}\n' "$prompt
         let out = sent(&c.cancel());
         assert!(out.iter().any(|m| m["id"] == 5 && m["result"]["outcome"]["outcome"] == "cancelled"));
         assert!(out.iter().any(|m| m["method"] == "session/cancel" && m["params"]["sessionId"] == "s"));
+    }
+}
+
+/// slava/local: Cursor over ACP (ported from #735) and telling `agent` binaries apart.
+#[cfg(test)]
+mod slava_cursor_tests {
+    use super::*;
+    use std::path::Path;
+
+    fn core() -> AcpCore {
+        let mcp = McpCommand { command: "craft-anything-cli".into(), args: vec!["mcp".into()], notes: None };
+        AcpCore::new("Cursor", "cursor-agent", "Cursor Agent", PathBuf::from("/w/project"), mcp, None)
+    }
+
+    fn sent(outs: &[Out]) -> Vec<Value> {
+        outs.iter().filter_map(|o| if let Out::Send(l) = o { serde_json::from_str(l).ok() } else { None }).collect()
+    }
+
+    fn events(outs: Vec<Out>) -> Vec<AgentEvent> {
+        outs.into_iter().filter_map(|o| if let Out::Event(e) = o { Some(e) } else { None }).collect()
+    }
+
+    #[test]
+    fn an_old_cursor_version_is_refused_before_the_session_starts() {
+        let mut c = core();
+        c.mcp_since = Some((2026, 6, 5));
+        c.start();
+        let refused = events(c.line(r#"{"jsonrpc":"2.0","id":1,"result":{"agentInfo":{"name":"cursor-agent","version":"2026.06.04-5fd875e"}}}"#));
+        assert!(matches!(&refused[0], AgentEvent::Error { message, .. } if message.contains("too old")), "{refused:?}");
+        assert!(!c.ready);
+        let mut c = core();
+        c.mcp_since = Some((2026, 6, 5));
+        c.start();
+        c.prompt("What does it do?");
+        let new = sent(&c.line(r#"{"jsonrpc":"2.0","id":1,"result":{"agentInfo":{"name":"cursor-agent","version":"2026.10.22-27dcf5f"}}}"#));
+        assert_eq!(new[0]["method"], "session/new");
+        assert_eq!(new[0]["params"]["mcpServers"][0]["name"], "craft-anything");
+        let prompt = sent(&c.line(r#"{"jsonrpc":"2.0","id":2,"result":{"sessionId":"s-1","mcpServers":[{"name":"craft-anything","status":"connected"}]}}"#));
+        assert_eq!(prompt[0]["method"], "session/prompt");
+        assert!(c.ready);
+        assert_eq!(version_date("2026.06.04-5fd875e"), Some((2026, 6, 4)));
+        assert!(agent_version_too_old(&json!({"agentInfo":{"version":"2026.06.04-5fd875e"}}), None, (2026, 6, 5)));
+        assert!(!agent_version_too_old(&json!({"info":{"version":"2026.10.22-27dcf5f"}}), None, (2026, 6, 5)));
+        assert!(agent_version_too_old(&json!({"agentInfo":{"version":"1.0.50"}}), None, (2026, 6, 5)), "Grok's version is not a Cursor date");
+        assert!(
+            !agent_version_too_old(&json!({"protocolVersion":1,"agentCapabilities":{"loadSession":true}}), None, (2026, 6, 5)),
+            "real Cursor initialize carries no version"
+        );
+        assert!(
+            agent_version_too_old(&json!({"protocolVersion":1,"agentCapabilities":{"loadSession":true}}), Some((2026, 6, 4)), (2026, 6, 5)),
+            "old probed Cursor version is refused even when initialize omits a version"
+        );
+        assert!(
+            !agent_version_too_old(&json!({"protocolVersion":1,"agentCapabilities":{"loadSession":true}}), Some((2026, 10, 22)), (2026, 6, 5)),
+            "recent probed Cursor version stays accepted when initialize omits a version"
+        );
+    }
+
+    #[test]
+    fn a_session_that_reports_mcp_startup_failure_or_an_empty_list_is_not_ready() {
+        for report in [
+            r#"[{"name":"craft-anything","status":"failed"}]"#,
+            r#"[{"name":"craft-anything","error":"boom"},{"name":"other","status":"connected"}]"#,
+            "[]",
+            r#"[{"name":"other","status":"connected"}]"#,
+            r#"[{"name":"other"}]"#,
+        ] {
+            let mut c = core();
+            c.start();
+            c.line(r#"{"jsonrpc":"2.0","id":1,"result":{}}"#);
+            let line = format!(r#"{{"jsonrpc":"2.0","id":2,"result":{{"sessionId":"s-1","mcpServers":{report}}}}}"#);
+            let failed = events(c.line(&line));
+            assert!(matches!(&failed[0], AgentEvent::Error { message, .. } if message.contains("started no Craft Anything tools")), "{report}: {failed:?}");
+            assert!(!c.ready);
+        }
+        // No report at all, or an entry for our server with no status (even alongside others), is not a failure.
+        for result in [
+            r#"{"sessionId":"s-1"}"#,
+            r#"{"sessionId":"s-1","mcpServers":[{"name":"craft-anything"}]}"#,
+            r#"{"sessionId":"s-1","mcpServers":[{"name":"craft-anything"},{"name":"other","status":"connected"}]}"#,
+        ] {
+            let mut c = core();
+            c.start();
+            c.prompt("What does it do?");
+            c.line(r#"{"jsonrpc":"2.0","id":1,"result":{}}"#);
+            let prompt = sent(&c.line(&format!(r#"{{"jsonrpc":"2.0","id":2,"result":{result}}}"#)));
+            assert_eq!(prompt[0]["method"], "session/prompt", "{result}");
+        }
+        // A question attaches no server, so an empty list is expected there.
+        let mut q = core();
+        q.question = true;
+        q.start();
+        q.prompt("Just a question.");
+        q.line(r#"{"jsonrpc":"2.0","id":1,"result":{}}"#);
+        let prompt = sent(&q.line(r#"{"jsonrpc":"2.0","id":2,"result":{"sessionId":"s-1","mcpServers":[]}}"#));
+        assert_eq!(prompt[0]["method"], "session/prompt");
+    }
+
+    #[test]
+    fn version_lines_name_the_agent_not_the_file_name() {
+        use super::super::{AgentIdentity, identity_from_version};
+        assert_eq!(identity_from_version("grok 1.0.50\n"), Some(AgentIdentity::Grok));
+        assert_eq!(identity_from_version("\n  grok 1.0.77 (abc123)"), Some(AgentIdentity::Grok));
+        assert_eq!(identity_from_version("2026.10.22-27dcf5f\n"), Some(AgentIdentity::Cursor));
+        assert_eq!(identity_from_version("Cursor Agent 2026.11.01"), Some(AgentIdentity::Cursor));
+        assert_eq!(identity_from_version("1.2.3"), None);
+        assert_eq!(identity_from_version("groking 1.0"), None);
+        assert_eq!(identity_from_version(""), None);
+    }
+
+    /// A fake `agent`: `--version` prints `$VERSION_LINE`; otherwise it plays a Cursor-style ACP
+    /// session (agentInfo, MCP connected, one prompt) and records its arguments.
+    #[cfg(unix)]
+    fn fake_agent(dir: &Path, version_line: &str) -> PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        let program = dir.join("agent");
+        let script = format!(
+            r#"#!/bin/sh
+d=$(dirname "$0")
+if [ "$1" = --version ]; then echo '{version_line}'; exit 0; fi
+printf '%s\n' "$@" > "$d/argv"
+IFS= read -r init
+echo '{{"jsonrpc":"2.0","id":1,"result":{{"agentInfo":{{"name":"cursor-agent","version":"2026.10.22-27dcf5f"}}}}}}'
+IFS= read -r new
+printf '%s\n' "$new" > "$d/new"
+echo '{{"jsonrpc":"2.0","id":2,"result":{{"sessionId":"s-1","mcpServers":[{{"name":"craft-anything","status":"connected"}}]}}}}'
+IFS= read -r prompt
+echo '{{"jsonrpc":"2.0","id":3,"result":{{"stopReason":"end_turn"}}}}'
+"#
+        );
+        std::fs::write(&program, script).unwrap();
+        std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
+        program
+    }
+
+    #[cfg(unix)]
+    fn run_turn(agent: &str, program: &Path, dir: &Path) -> Vec<AgentEvent> {
+        let mcp = McpCommand { command: "craft-anything-cli".into(), args: vec!["mcp".into()], notes: None };
+        let args: Vec<String> = ACP_AGENTS.iter().find(|(id, _)| *id == agent).map(|(_, a)| a.iter().map(|s| s.to_string()).collect()).unwrap_or_default();
+        let mut c = AcpConversation::new("Fake", agent, program.display().to_string(), args, dir.into(), mcp, None);
+        c.send("Hello");
+        let deadline = std::time::Instant::now() + Duration::from_secs(15);
+        let mut all = Vec::new();
+        while !all.iter().any(|e| matches!(e, AgentEvent::TurnDone { .. } | AgentEvent::Error { .. })) {
+            assert!(std::time::Instant::now() < deadline, "no TurnDone or Error: {all:?}");
+            all.extend(c.poll());
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        all
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cursor_runs_over_acp_with_our_mcp_server_when_agent_is_cursor() {
+        let dir = tempfile::tempdir().unwrap();
+        let program = fake_agent(dir.path(), "2026.10.22-27dcf5f");
+        let events = run_turn("cursor-agent", &program, dir.path());
+        assert!(!events.iter().any(|e| matches!(e, AgentEvent::Error { .. })), "{events:?}");
+        assert_eq!(std::fs::read_to_string(dir.path().join("argv")).unwrap().trim(), "acp");
+        let new: Value = serde_json::from_str(&std::fs::read_to_string(dir.path().join("new")).unwrap()).unwrap();
+        assert_eq!(new["params"]["mcpServers"][0]["name"], "craft-anything");
+        assert_eq!(new["params"]["mcpServers"][0]["command"], "craft-anything-cli");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_grok_agent_binary_is_refused_as_cursor_and_never_started_in_acp_mode() {
+        let dir = tempfile::tempdir().unwrap();
+        let program = fake_agent(dir.path(), "grok 1.0.50");
+        let events = run_turn("cursor-agent", &program, dir.path());
+        assert!(
+            events.iter().any(|e| matches!(e, AgentEvent::Error { message, .. } if message.contains("is Grok Build") && message.contains("not Cursor Agent"))),
+            "{events:?}"
+        );
+        assert!(!dir.path().join("argv").exists(), "the ACP session must not start");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_cursor_agent_binary_is_refused_as_grok() {
+        let dir = tempfile::tempdir().unwrap();
+        let program = fake_agent(dir.path(), "2026.10.22-27dcf5f");
+        let events = run_turn("grok", &program, dir.path());
+        assert!(
+            events.iter().any(|e| matches!(e, AgentEvent::Error { message, .. } if message.contains("is Cursor Agent") && message.contains("not Grok Build"))),
+            "{events:?}"
+        );
+        assert!(!dir.path().join("argv").exists());
+        // The same check passes for the agent it really is.
+        assert!(super::super::check_identity(&program.display().to_string(), super::super::AgentIdentity::Cursor).is_ok());
+        let grok = fake_agent(&tempfile::tempdir().unwrap().keep(), "grok 1.0.50");
+        assert!(super::super::check_identity(&grok.display().to_string(), super::super::AgentIdentity::Grok).is_ok());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn old_probed_cursor_version_is_refused_when_initialize_has_no_version() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let program = dir.path().join("agent");
+        let script = r#"#!/bin/sh
+if [ "$1" = --version ]; then echo '2026.06.04-5fd875e'; exit 0; fi
+IFS= read -r init
+echo '{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1,"agentCapabilities":{"loadSession":true}}}'
+IFS= read -r rest
+"#;
+        std::fs::write(&program, script).unwrap();
+        std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let events = run_turn("cursor-agent", &program, dir.path());
+        assert!(events.iter().any(|e| matches!(e, AgentEvent::Error { message, .. } if message.contains("too old"))), "{events:?}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn identity_probe_does_not_block_send_on_ui_thread() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let program = dir.path().join("agent");
+        let script = r#"#!/bin/sh
+if [ "$1" = --version ]; then sleep 0.4; echo 'grok 1.0.50'; exit 0; fi
+exit 1
+"#;
+        std::fs::write(&program, script).unwrap();
+        std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let mcp = McpCommand { command: "craft-anything-cli".into(), args: vec!["mcp".into()], notes: None };
+        let mut c = AcpConversation::new("Fake", "cursor-agent", program.display().to_string(), vec!["acp".into()], dir.path().into(), mcp, None);
+        let started = std::time::Instant::now();
+        c.send("Hello");
+        assert!(started.elapsed() < Duration::from_millis(200), "send must return before --version finishes");
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        let mut all = Vec::new();
+        while !all.iter().any(|e| matches!(e, AgentEvent::TurnDone { .. })) {
+            assert!(std::time::Instant::now() < deadline, "no TurnDone: {all:?}");
+            all.extend(c.poll());
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(!c.is_busy());
+        assert!(all.iter().any(|e| matches!(e, AgentEvent::Error { message, .. } if message.contains("is Grok Build"))));
     }
 }

@@ -1204,6 +1204,7 @@ impl<'a> D<'a> {
                     b'P' => "generic type metadata pattern for",
                     b'B' => "reflection metadata builtin descriptor",
                     b'U' => "ObjC metadata update function for",
+                    b'Q' => "opaque type descriptor for",
                     b't' => "full ObjC resilient class stub for",
                     b's' => "ObjC resilient class stub for",
                     _ => return Err("unsupported metadata kind".into()),

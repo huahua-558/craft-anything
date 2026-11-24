@@ -3652,6 +3652,9 @@ Owner: open · Status: in progress
       or manifest, ASAR, text). Fat Mach-O files that start 0xCAFEBABF are now recognized.
       — claimed: FredApps, branch refactor/target-kind-craft-sniff
 
+- [x] `MQ` on an opaque return type decodes as the opaque type descriptor of that declaration (for example `_$s12FinanceKitUI16OrderPaymentViewV4bodyQrvpQOMQ`).
+      — claimed: Chr0mium24, branch bugfix/r3.12-swift-demangle-opaque-type-desc
+
 ### R3.13 Web inspection correctness
 Owner: open · Status: in progress
 - [x] Decode character references in HTML page titles before returning their displayed text.

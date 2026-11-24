@@ -998,6 +998,22 @@ impl<'a> D<'a> {
         self.push(N::Global { prefix, inner: Box::new(conf), suffix: String::new() })
     }
 
+    /// `Tl`: the associated type descriptor of an associated type. The operand is the
+    /// protocol or type that declares the associated type, followed by the associated
+    /// type's name (possibly a private name). Only the dotted path `base.name` is
+    /// printed, in the usual `associated type descriptor for` form, and it reads like
+    /// `associated type descriptor for Human.ComputeNode.Input`.
+    fn associated_type_descriptor(&mut self) -> R<()> {
+        let base = self.pop_type()?;
+        match &base {
+            N::Nominal { kind: 'P', .. } => {}
+            _ => return Err("expected a protocol".into()),
+        }
+        let name = self.pop_name()?;
+        let n = N::Member { base: Box::new(base), name };
+        self.push(N::Global { prefix: "associated type descriptor for".into(), inner: Box::new(n), suffix: String::new() })
+    }
+
     /// `WO` and a letter: an outlined value operation, a copy, move or destroy the compiler
     /// spelled out inline for one type, such as `outlined destroy of main.S`. The operand is the
     /// whole type before it. `i` and `j` take an index after the letter, which is not printed.
@@ -1361,6 +1377,7 @@ impl<'a> D<'a> {
                         let phrase = if k == b'Y' { "suspend resume" } else { "await resume" };
                         return self.async_thunk(format!("({i}) {phrase} partial function for"));
                     }
+                    b'l' => return self.associated_type_descriptor(),
                     b'v' => return self.outlined_variable(),
                     _ => return Err("unsupported thunk or specialization".into()),
                 };

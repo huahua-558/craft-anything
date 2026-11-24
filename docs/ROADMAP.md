@@ -3651,6 +3651,10 @@ Owner: open · Status: in progress
       that need its own parsers (managed PE, Java class versus a universal Mach-O, APK by name
       or manifest, ASAR, text). Fat Mach-O files that start 0xCAFEBABF are now recognized.
       — claimed: FredApps, branch refactor/target-kind-craft-sniff
+- [x] Swift associated type descriptors `PTl` were invalid; they now read "associated type descriptor for"
+      followed by the dotted path `DeclaringType.AssociatedType` (e.g. `Human.ComputeNode.Input`),
+      as `swift-demangle` prints them, consuming the declaring type and the associated type name.
+      — claimed: Chr0mium24, branch bugfix/r3.12-swift-demangle-assoc-type-desc
 
 ### R3.13 Web inspection correctness
 Owner: open · Status: in progress

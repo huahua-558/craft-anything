@@ -209,6 +209,13 @@ impl CraftApp {
     /// Show a project: a building one's conversation comes from its run, any other's from what
     /// was saved. Other projects keep building meanwhile.
     pub fn open_workspace(&mut self, ws: Workspace) {
+        self.open_workspace_mode(ws, true);
+    }
+
+    /// Open a workspace, optionally remembering its folder in `settings.project_folders`.
+    /// Startup restoration passes `remember = false` so `last_project` never silently re-adds an
+    /// unlisted folder (#2340).
+    pub(crate) fn open_workspace_mode(&mut self, ws: Workspace, remember: bool) {
         let root = ws.root.clone();
         let same = self.workspace.as_ref().is_some_and(|w| w.root == ws.root);
         if !same {
@@ -230,10 +237,14 @@ impl CraftApp {
             self.load_asked(&ws);
         }
         self.workspace = Some(ws.clone());
-        if !self.projects.iter().any(|p| p.root == ws.root) {
+        if remember {
+            if !self.projects.iter().any(|p| p.root == ws.root) {
+                self.projects.insert(0, ws);
+            }
+            self.remember_project(&root);
+        } else if self.settings.lists_project(&root) && !self.projects.iter().any(|p| p.root == ws.root) {
             self.projects.insert(0, ws);
         }
-        self.remember_project(&root);
         self.refresh_side_panel();
         self.state.screen = Screen::Project;
         // A Send pressed before its picture checks finished, on a project they left: send now.

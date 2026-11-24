@@ -767,8 +767,9 @@ impl CraftApp {
         }
         self.state.unsent = p.unsent.into_iter().map(|(root, text)| (root, (text, Vec::new()))).collect();
         // Back to the project that was open, with its conversation, if it's still there.
+        // Restoring `last_project` must not silently re-add an unlisted folder to `project_folders` (#2340).
         if let Some(ws) = p.last_project.and_then(|root| craft_anything_engine::workspace::Workspace::open(&root).ok()) {
-            self.open_workspace(ws);
+            self.open_workspace_mode(ws, false);
         }
     }
 
@@ -1629,7 +1630,9 @@ impl CraftApp {
         match done {
             Done::Nothing => {}
             Done::Projects(mut p) => {
+                p.retain(|w| self.settings.lists_project(&w.root));
                 if let Some(ws) = &self.workspace
+                    && self.settings.lists_project(&ws.root)
                     && !p.iter().any(|w| w.root == ws.root)
                 {
                     p.insert(0, ws.clone());

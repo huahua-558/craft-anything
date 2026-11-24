@@ -3652,6 +3652,14 @@ Owner: open · Status: in progress
       or manifest, ASAR, text). Fat Mach-O files that start 0xCAFEBABF are now recognized.
       — claimed: FredApps, branch refactor/target-kind-craft-sniff
 
+- [x] Swift function parameters with `__shared` ownership decode. The `h` operator was reported
+      as an "unsupported operator", so `init(exactly: __shared ...)` parameters and any function
+      type using a `__shared` parameter failed; they now read `__shared` before the parameter type,
+      as `swift-demangle` prints them. For example
+      `_$s10Foundation12CharacterSetV12charactersInACSSh_tcfC` reads
+      "Foundation.CharacterSet.init(charactersIn: __shared Swift.String) -> Foundation.CharacterSet".
+      — claimed: Chr0mium24, branch bugfix/r3.12-swift-demangle-shared
+
 ### R3.13 Web inspection correctness
 Owner: open · Status: in progress
 - [x] Decode character references in HTML page titles before returning their displayed text.

@@ -1567,6 +1567,7 @@ dependencies = [
  "tempfile",
  "vt100",
  "windows",
+ "x11rb",
  "xcap",
 ]
 

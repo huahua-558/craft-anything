@@ -998,6 +998,44 @@ impl<'a> D<'a> {
         self.push(N::Global { prefix, inner: Box::new(conf), suffix: String::new() })
     }
 
+    /// `Tn`: an associated conformance descriptor. The stack carries the protocol that declares the
+    /// associated type, then one or more associated-type path segments, then a first-element marker,
+    /// then the protocol the associated type conforms to. Only the full dotted path and the
+    /// conforming protocol are printed.
+    fn associated_conformance_descriptor(&mut self) -> R<()> {
+        let conforming = self.pop_protocol()?;
+        // The conforming operand must be a protocol: a named protocol from a
+        // context, or a standard library protocol. A non-protocol type (such as
+        // `Swift.Int`) is rejected here, matching swift-demangle.
+        if !matches!(conforming, N::Nominal { kind: 'P', .. }) {
+            return Err("expected a protocol".into());
+        }
+        let mut parts = Vec::new();
+        let mut closed = false;
+        while !closed {
+            let mut node = self.pop()?;
+            if matches!(node, N::FirstMarker) {
+                closed = true;
+                node = self.pop()?;
+            }
+            let part = match node {
+                N::Ident(name) => name,
+                owner @ N::Nominal { kind: 'P', .. } => format!("{}.{}", path(&owner, 0), self.pop_name()?),
+                _ => return Err("expected an associated type name".into()),
+            };
+            parts.push(part);
+        }
+        parts.reverse();
+        let declaring = match self.pop()? {
+            n @ N::Nominal { kind: 'P', .. } => n,
+            _ => return Err("expected a protocol".into()),
+        };
+        let assoc_path = parts.join(".");
+        let left = if assoc_path.is_empty() { path(&declaring, 0) } else { format!("{}.{}", path(&declaring, 0), assoc_path) };
+        let text = format!("associated conformance descriptor for {}: {}", left, path(&conforming, 0));
+        self.push(N::Global { prefix: text, inner: Box::new(N::EmptyList), suffix: String::new() })
+    }
+
     /// `WO` and a letter: an outlined value operation, a copy, move or destroy the compiler
     /// spelled out inline for one type, such as `outlined destroy of main.S`. The operand is the
     /// whole type before it. `i` and `j` take an index after the letter, which is not printed.
@@ -1361,6 +1399,7 @@ impl<'a> D<'a> {
                         let phrase = if k == b'Y' { "suspend resume" } else { "await resume" };
                         return self.async_thunk(format!("({i}) {phrase} partial function for"));
                     }
+                    b'n' => return self.associated_conformance_descriptor(),
                     b'v' => return self.outlined_variable(),
                     _ => return Err("unsupported thunk or specialization".into()),
                 };

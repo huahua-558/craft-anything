@@ -3652,6 +3652,9 @@ Owner: open · Status: in progress
       or manifest, ASAR, text). Fat Mach-O files that start 0xCAFEBABF are now recognized.
       — claimed: FredApps, branch refactor/target-kind-craft-sniff
 
+- [x] Decode Swift associated conformance descriptors (`Tn`): print `associated conformance descriptor for <declaring>.<assoc path>: <conforming>`, consuming multi-segment associated-type paths.
+      — claimed: Chr0mium24, branch bugfix/r3.12-swift-demangle-assoc-conf-desc
+
 ### R3.13 Web inspection correctness
 Owner: open · Status: in progress
 - [x] Decode character references in HTML page titles before returning their displayed text.

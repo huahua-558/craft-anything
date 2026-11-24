@@ -29,6 +29,21 @@ texts are in the crate's `fonts/` folder.
 | `Hack-Regular.ttf` | Hack (egui's default monospace font) | © 2018 Source Foundry Authors; Bitstream Vera © 2003 Bitstream, Inc.; DejaVu changes public domain | MIT and Bitstream Vera License, `Hack-Regular.txt` |
 | `emoji-icon-font.ttf` | emoji-icon-font | © 2014 John Slegers | MIT, `emoji-icon-font-mit-license.txt` |
 
+## Python 3.15 bytecode fixtures
+
+`crates/formats/tests/fixtures/python315/generate.py` and its original source inputs are by
+Afloat16, under MIT OR Apache-2.0. `fixtures.json` contains their compiled/serialized output
+and metadata observed through CPython's public APIs. Regeneration requires CPython 3.15.2;
+the Rust tests use the committed corpus alone. The frozen-dictionary variant extends a
+compiled code object with `CodeType.replace`, then uses `marshal` to write and read it; it is
+not a compiler-folded frozen-dictionary literal. None of the compiled input is executed.
+
+The external compiler and marshal tools are CPython, by the Python Software Foundation and
+contributors under the Python Software Foundation License Version 2. Their implementation is
+not bundled here. The format references are the [magic-number declarations](https://github.com/python/cpython/blob/5e58eaad7c58df58dfa8ea549c87996e01dd1077/Include/internal/pycore_magic_number.h)
+and [marshal writer/reader](https://github.com/python/cpython/blob/5e58eaad7c58df58dfa8ea549c87996e01dd1077/Python/marshal.c)
+at that release's fixed commit.
+
 ## Icons (`assets/icons/`)
 
 | Files | Set | Copyright | Source | Licence |

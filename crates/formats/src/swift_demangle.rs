@@ -119,6 +119,8 @@ enum N {
         name: String,
     },
     Inout(Box<N>),
+    /// A variadic type, printed `T...` (`d` operator).
+    Variadic(Box<N>),
     /// The opaque result type of the declaration being mangled (`some P`), printed as `some`.
     Opaque,
     /// The declaration that returns opaque types (`QO`), printed `<<opaque return type of …>>`.
@@ -1440,6 +1442,21 @@ impl<'a> D<'a> {
                 let f = self.pop_func_type()?;
                 self.push(f)
             }
+            b'd' => {
+                // A variadic marker may follow a tuple element label, which sits
+                // above the type on the stack. Preserve the label so tuple parsing
+                // can attach it, and mark only the type as variadic.
+                let label = match self.stack.last() {
+                    Some(N::Ident(_)) => self.stack.pop(),
+                    _ => None,
+                };
+                let t = self.witness_type()?;
+                self.push(N::Variadic(Box::new(t)))?;
+                if let Some(l) = label {
+                    self.push(l)?;
+                }
+                Ok(())
+            }
             b'f' => {
                 let k = self.next()?;
                 let kind = match k {
@@ -1610,7 +1627,7 @@ fn weight(n: &N, depth: usize) -> usize {
             w.saturating_add(attrs.actor.as_deref().into_iter().chain(typed_throws(&attrs.throws)).fold(0usize, |a, x| a.saturating_add(weight(x, d))))
         }
         N::FnMarker(FnMarker::Actor(x) | FnMarker::Thrown(x)) => weight(x, d),
-        N::Metatype(x) | N::ExistentialMetatype(x) | N::ReprMetatype(x) | N::Inout(x) | N::OpaqueDecl(x) => weight(x, d),
+        N::Metatype(x) | N::ExistentialMetatype(x) | N::ReprMetatype(x) | N::Inout(x) | N::Variadic(x) | N::OpaqueDecl(x) => weight(x, d),
         N::OpaqueRef { decl, .. } => weight(decl, d),
         N::Attributed { inner, .. } => weight(inner, d),
         N::ClassBound { class, protos } => protos.iter().fold(weight(class, d), |a, x| a.saturating_add(weight(x, d))),
@@ -1693,7 +1710,7 @@ fn max_param(n: &N, depth: usize) -> u64 {
         N::FnMarker(FnMarker::Actor(x) | FnMarker::Thrown(x)) => max_param(x, depth + 1),
         N::Tuple(t) => t.iter().map(|(_, x)| max_param(x, depth + 1)).max().unwrap_or(0),
         N::Bound { base, args } => args.iter().map(|x| max_param(x, depth + 1)).max().unwrap_or(0).max(max_param(base, depth + 1)),
-        N::Metatype(x) | N::ExistentialMetatype(x) | N::ReprMetatype(x) | N::Inout(x) => max_param(x, depth + 1),
+        N::Metatype(x) | N::ExistentialMetatype(x) | N::ReprMetatype(x) | N::Inout(x) | N::Variadic(x) => max_param(x, depth + 1),
         N::Attributed { inner, .. } => max_param(inner, depth + 1),
         N::ClassBound { class, protos } => protos.iter().map(|x| max_param(x, depth + 1)).max().unwrap_or(0).max(max_param(class, depth + 1)),
         N::Member { base, .. } => max_param(base, depth + 1),
@@ -1808,6 +1825,7 @@ fn render(n: &N, depth: usize) -> String {
         N::Param(dp, i) => param_name(*dp, *i),
         N::Member { base, name } => format!("{}.{name}", render(base, d)),
         N::Inout(t) => format!("inout {}", render(t, d)),
+        N::Variadic(t) => format!("{}...", render(t, d)),
         N::Opaque => "some".into(),
         N::OpaqueDecl(decl) => format!("<<opaque return type of {}>>", render(decl, d)),
         N::OpaqueRef { decl, index } => format!("<<opaque return type of {}>>.{index}", render(decl, d)),

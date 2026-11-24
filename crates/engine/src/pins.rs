@@ -15,11 +15,15 @@
 //! those take no more space. A rebuild replaces or deletes files, which leaves the pin's as they
 //! were; only a file rewritten in place changes in both. Programs a pin or Play started are kept
 //! in [`Runs`], one at a time per folder unless another is asked for.
+//!
+//! A pin of a **website** copies the built site (`dist/`, `build/`, `out/` or the app itself) into
+//! `app/`, and opening it serves that copy on a loopback port of its own ([`Sites`]).
 
 use crate::inbox::now_ms;
 use crate::versioned;
 use crate::workspace::{self, Workspace};
 use craft_anything_evidence::{ErrorCode, ToolError};
+use craft_anything_platform::serve::StaticServer;
 use craft_anything_platform::sync::Mutex;
 use craft_anything_platform::{Ended, Launch, Launched};
 use schemars::JsonSchema;
@@ -116,6 +120,9 @@ pub struct Pin {
     /// Older pins and launches through an external runtime keep the existing discovery path.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub program: Option<PathBuf>,
+    /// A website: its copy is the built site, served rather than started.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub site: bool,
 }
 
 impl Pin {
@@ -124,6 +131,7 @@ impl Pin {
     }
 
     /// The folder its program runs from: its copy, or the project's app for a live pin.
+    /// For a website, the folder that is served.
     pub fn app_dir(&self, ws: &Workspace) -> PathBuf {
         match self.mode {
             PinMode::Frozen | PinMode::Light => self.dir(ws).join("app"),
@@ -306,9 +314,7 @@ impl Plan {
     /// Every (file, where it goes under `to`) the copy makes, in order.
     fn files(&self, ws: &Workspace, to: &Path) -> Result<Vec<Planned>, ToolError> {
         let (mut own, mut dependencies) = (Vec::new(), Vec::new());
-        let skip = |p: &Path| {
-            workspace::rebuilt(p) || ws.is_own_record(p) || p.file_name().and_then(|n| n.to_str()).is_some_and(|n| NEVER_COPIED.contains(&n)) || stray_copy(p)
-        };
+        let skip = |p: &Path| workspace::rebuilt(p) || ws.is_own_record(p) || never_copied(p) || stray_copy(p);
         walk(&self.app, to, &skip, 0, &mut own)?;
         for k in &self.keep {
             let (from, whole) = match k {
@@ -317,13 +323,7 @@ impl Plan {
             };
             let rel = from.strip_prefix(&self.app).map_err(|_| ToolError::internal("a kept folder isn't inside the app"))?;
             if whole {
-                walk(
-                    from,
-                    &to.join(rel),
-                    &|p| p.file_name().and_then(|n| n.to_str()).is_some_and(|n| NEVER_COPIED.contains(&n)) || stray_copy(p),
-                    0,
-                    &mut dependencies,
-                )?;
+                walk(from, &to.join(rel), &|p| never_copied(p) || stray_copy(p), 0, &mut dependencies)?;
             } else {
                 for e in std::fs::read_dir(from).map_err(|e| ToolError::io(from.display(), e))?.flatten() {
                     if let Ok(m) = e.metadata()
@@ -355,7 +355,6 @@ impl Plan {
             }
         }
         let beside_program = |p: &Path| p.parent() == self.program_dir.as_deref();
-        let media = |p: &Path| p.extension().and_then(|e| e.to_str()).is_some_and(|e| SHARED_KINDS.contains(&e.to_ascii_lowercase().as_str()));
         let own = own.into_iter().map(|f| (f, true));
         let dependencies = dependencies.into_iter().map(|f| (f, false));
         Ok(own
@@ -366,6 +365,26 @@ impl Plan {
             })
             .collect())
     }
+}
+
+fn media(p: &Path) -> bool {
+    p.extension().and_then(|e| e.to_str()).is_some_and(|e| SHARED_KINDS.contains(&e.to_ascii_lowercase().as_str()))
+}
+
+fn never_copied(p: &Path) -> bool {
+    p.file_name().and_then(|n| n.to_str()).is_some_and(|n| NEVER_COPIED.contains(&n))
+}
+
+/// Every file of a built website under `to`: all of it is the site's, so nothing in it is left out
+/// as compiler output. A light pin shares its media.
+fn site_files(ws: &Workspace, site: &Path, to: &Path) -> Result<Vec<Planned>, ToolError> {
+    let mut found = Vec::new();
+    // The preview server serves a link that stays inside the site as what it points to; the pin
+    // must too, so those are copied as their targets.
+    let root = std::fs::canonicalize(site).map_err(|e| ToolError::io(site.display(), e))?;
+    let mut within = Within { chain: vec![root.clone()], root };
+    walk_in(site, to, &|p| ws.is_own_record(p) || never_copied(p), Some(&mut within), 0, &mut found)?;
+    Ok(found.into_iter().map(|(from, to, len)| Planned { shared: media(&from), from, to, len }).collect())
 }
 
 fn compiler_leftover(p: &Path) -> bool {
@@ -396,41 +415,95 @@ fn stray_copy(p: &Path) -> bool {
 const WALK_DEPTH: usize = 64;
 
 fn walk(from: &Path, to: &Path, skip: &dyn Fn(&Path) -> bool, depth: usize, out: &mut Vec<(PathBuf, PathBuf, u64)>) -> Result<(), ToolError> {
+    walk_in(from, to, skip, None, depth, out)
+}
+
+/// The canonical folder whose links [`walk_in`] follows, and the real folders it is walking into.
+struct Within {
+    root: PathBuf,
+    chain: Vec<PathBuf>,
+}
+
+/// [`walk`], also following each link whose target is inside `within`'s root, from that target;
+/// other links are left out, and so are links to what `skip` leaves out or to a folder being walked.
+fn walk_in(
+    from: &Path,
+    to: &Path,
+    skip: &dyn Fn(&Path) -> bool,
+    mut within: Option<&mut Within>,
+    depth: usize,
+    out: &mut Vec<(PathBuf, PathBuf, u64)>,
+) -> Result<(), ToolError> {
     if depth > WALK_DEPTH {
         return Err(ToolError::new(ErrorCode::OverLimit, format!("{} is nested more than {WALK_DEPTH} folders deep.", from.display())));
     }
     for entry in std::fs::read_dir(from).map_err(|e| ToolError::io(from.display(), e))? {
         let entry = entry.map_err(|e| ToolError::io(from.display(), e))?;
-        let (path, kind) = (entry.path(), entry.file_type().map_err(|e| ToolError::io(entry.path().display(), e))?);
-        if skip(&path) || kind.is_symlink() {
+        let (mut path, mut kind) = (entry.path(), entry.file_type().map_err(|e| ToolError::io(entry.path().display(), e))?);
+        if skip(&path) {
             continue;
+        }
+        let linked = kind.is_symlink();
+        if linked {
+            let Some(w) = within.as_deref() else { continue };
+            let Some(target) = std::fs::canonicalize(&path).ok().filter(|t| t.starts_with(&w.root)) else { continue };
+            // A link into `.git` or the project's records, or back up to a folder being walked
+            // (`self -> .`, which would never end), isn't followed.
+            if target.ancestors().take_while(|a| *a != w.root).any(skip) || w.chain.contains(&target) {
+                continue;
+            }
+            kind = std::fs::metadata(&target).map_err(|e| ToolError::io(target.display(), e))?.file_type();
+            path = target;
         }
         let dest = to.join(entry.file_name());
         if kind.is_dir() {
-            walk(&path, &dest, skip, depth + 1, out)?;
+            match within.as_deref_mut() {
+                Some(w) => {
+                    let real = if linked { path.clone() } else { w.chain.last().map_or_else(|| path.clone(), |r| r.join(entry.file_name())) };
+                    w.chain.push(real);
+                    let walked = walk_in(&path, &dest, skip, Some(&mut *w), depth + 1, out);
+                    w.chain.pop();
+                    walked?;
+                }
+                None => walk_in(&path, &dest, skip, None, depth + 1, out)?,
+            }
         } else if kind.is_file() {
-            out.push((path, dest, entry.metadata().map(|m| m.len()).unwrap_or(0)));
+            let len = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+            out.push((path, dest, len));
         }
     }
     Ok(())
 }
 
-/// What there is to start in `app`: the program and its arguments (see `outputs::launch_now`). A
-/// website isn't pinned yet.
-fn start_of(app: &Path, godot: Option<&Path>) -> Result<(PathBuf, Vec<String>), ToolError> {
-    if crate::outputs::site_dir(app).is_some() {
-        return Err(ToolError::unsupported("This project made a website, and websites can't be pinned yet.").with_remediation("Use project_preview to see it."));
+/// What a build in `app` is: a website's folder, or a program and its arguments (see
+/// `outputs::launch_now`).
+enum Built {
+    Site(PathBuf),
+    Program(PathBuf, Vec<String>),
+}
+
+fn built_in(app: &Path, godot: Option<&Path>) -> Result<Built, ToolError> {
+    if let Some(site) = crate::outputs::site_dir(app) {
+        return Ok(Built::Site(site));
     }
-    crate::outputs::launch_now(app, godot).ok_or_else(|| {
+    let (program, args) = crate::outputs::launch_now(app, godot).ok_or_else(|| {
         ToolError::new(ErrorCode::NotFound, "There's nothing to pin yet: no built program in this project.")
             .with_remediation("Finish a build first (rebuild), then pin it.")
-    })
+    })?;
+    Ok(Built::Program(program, args))
+}
+
+/// The files a pin of `built` copies, under `to`.
+fn planned(ws: &Workspace, built: &Built, to: &Path) -> Result<Vec<Planned>, ToolError> {
+    match built {
+        Built::Site(site) => site_files(ws, site, to),
+        Built::Program(program, args) => Plan::new(ws, program, args.is_empty()).files(ws, to),
+    }
 }
 
 /// What a pin of the project's current build would take on disk.
 pub fn estimate(ws: &Workspace, godot: Option<&Path>) -> Result<Size, ToolError> {
-    let (program, args) = start_of(&ws.app_dir(), godot)?;
-    let files = Plan::new(ws, &program, args.is_empty()).files(ws, Path::new(""))?;
+    let files = planned(ws, &built_in(&ws.app_dir(), godot)?, Path::new(""))?;
     let bytes = |only_copied: bool| files.iter().filter(|f| !(only_copied && f.shared)).fold(0u64, |n, f| n.saturating_add(f.len));
     Ok(Size { bytes: bytes(false), files: files.len() as u64, light_bytes: bytes(true) })
 }
@@ -442,8 +515,12 @@ pub fn create(ws: &Workspace, mode: PinMode, name: Option<&str>, godot: Option<&
         return Err(ToolError::invalid("Live pins aren't made any more: one only opened the latest build, as Play does.")
             .with_remediation("Pin it as frozen or light."));
     }
-    let (program, args) = start_of(&ws.app_dir(), godot)?;
-    let recorded_program = if args.is_empty() { pin_program(&ws.app_dir(), &program) } else { None };
+    let built = built_in(&ws.app_dir(), godot)?;
+    let recorded_program = match &built {
+        Built::Program(program, args) if args.is_empty() => pin_program(&ws.app_dir(), program),
+        _ => None,
+    };
+    let site = matches!(built, Built::Site(_));
     let parent = ws.root.join(PINNED);
     std::fs::create_dir_all(&parent).map_err(|e| ToolError::io(parent.display(), e))?;
     let mut id = list(ws).iter().map(|p| p.id).max().unwrap_or(0).saturating_add(1);
@@ -463,11 +540,25 @@ pub fn create(ws: &Workspace, mode: PinMode, name: Option<&str>, godot: Option<&
         (None, Some(r)) => format!("{project} · round {r}"),
         (None, None) => format!("{project} · pin {id}"),
     };
-    let mut pin =
-        Pin { version: PIN_VERSION, id, name, mode, created_ms: now_ms(), round, bytes: 0, shared_bytes: 0, copied_shared_bytes: 0, program: recorded_program };
+    let mut pin = Pin {
+        version: PIN_VERSION,
+        id,
+        name,
+        mode,
+        created_ms: now_ms(),
+        round,
+        bytes: 0,
+        shared_bytes: 0,
+        copied_shared_bytes: 0,
+        program: recorded_program,
+        site,
+    };
     let made = (|| {
-        (pin.bytes, pin.shared_bytes, pin.copied_shared_bytes) = copy(ws, &program, args.is_empty(), &pin.app_dir(ws), mode, progress)?;
-        pin.launch(ws, godot)?;
+        let files = planned(ws, &built, &pin.app_dir(ws))?;
+        (pin.bytes, pin.shared_bytes, pin.copied_shared_bytes) = copy_files(&files, mode, progress, &|from, to| std::fs::hard_link(from, to))?;
+        if !site {
+            pin.launch(ws, godot)?;
+        }
         save(ws, &pin)
     })();
     if let Err(e) = made {
@@ -480,21 +571,9 @@ pub fn create(ws: &Workspace, mode: PinMode, name: Option<&str>, godot: Option<&
     Ok(pin)
 }
 
-/// Make a pin's copy; what it took and what it shares. A file that can't be linked (a drive
-/// without hard links, a file with as many as it can have) is copied.
-fn copy(
-    ws: &Workspace,
-    program: &Path,
-    copy_external: bool,
-    to: &Path,
-    mode: PinMode,
-    progress: &mut dyn FnMut(u64, u64) -> bool,
-) -> Result<(u64, u64, u64), ToolError> {
-    copy_linking(ws, program, copy_external, to, mode, progress, &|from, to| std::fs::hard_link(from, to))
-}
-
-/// `copy`, with the way a file is linked given as a parameter, so a test can make linking fail
-/// without needing a drive that can't link.
+/// Make a pin's copy of a program's build, with the way a file is linked given as a parameter, so
+/// a test can make linking fail without needing a drive that can't link.
+#[cfg(test)]
 fn copy_linking(
     ws: &Workspace,
     program: &Path,
@@ -504,10 +583,20 @@ fn copy_linking(
     progress: &mut dyn FnMut(u64, u64) -> bool,
     link: &dyn Fn(&Path, &Path) -> std::io::Result<()>,
 ) -> Result<(u64, u64, u64), ToolError> {
-    let files = Plan::new(ws, program, copy_external).files(ws, to)?;
+    copy_files(&Plan::new(ws, program, copy_external).files(ws, to)?, mode, progress, link)
+}
+
+/// Copy `files`; what it took and what it shares. A file that can't be linked (a drive without
+/// hard links, a file with as many as it can have) is copied.
+fn copy_files(
+    files: &[Planned],
+    mode: PinMode,
+    progress: &mut dyn FnMut(u64, u64) -> bool,
+    link: &dyn Fn(&Path, &Path) -> std::io::Result<()>,
+) -> Result<(u64, u64, u64), ToolError> {
     let total = files.iter().fold(0u64, |n, f| n.saturating_add(f.len));
     let (mut done, mut shared, mut copied_shared) = (0u64, 0u64, 0u64);
-    for f in &files {
+    for f in files {
         if !progress(done, total) {
             return Err(ToolError::new(ErrorCode::Cancelled, "Pinning was stopped; nothing was kept."));
         }
@@ -590,9 +679,30 @@ pub enum Opened {
 pub struct Runs(Mutex<HashMap<String, Vec<Launched>>>);
 
 /// One key per folder (case and slashes don't matter on Windows).
+/// One folder, however its path was written (relative, with `..`, through a link), is one key.
 fn key(dir: &Path) -> String {
+    let dir = followed(dir);
     let s = dir.to_string_lossy();
     if cfg!(windows) { s.to_lowercase().replace('\\', "/").trim_end_matches('/').to_string() } else { s.trim_end_matches('/').to_string() }
+}
+
+/// `dir` made absolute, its deepest part that exists with links followed and the rest with `..`
+/// resolved as written, so `/a/link/../pin` is where the link leads and a removed folder keeps
+/// the path it had.
+fn followed(dir: &Path) -> PathBuf {
+    let dir = workspace::absolute(dir);
+    let mut rest = Vec::new();
+    let mut at = dir.as_path();
+    let mut real = loop {
+        if let Ok(real) = std::fs::canonicalize(at) {
+            break real;
+        }
+        let (Some(parent), Some(last)) = (at.parent(), at.components().next_back()) else { break at.to_path_buf() };
+        rest.push(last);
+        at = parent;
+    };
+    real.extend(rest.iter().rev());
+    workspace::normalized(&real)
 }
 
 impl Runs {
@@ -631,6 +741,36 @@ impl Runs {
     pub fn stop(&self, dir: &Path) -> usize {
         let list = self.0.lock().unwrap_or_else(PoisonError::into_inner).remove(&key(dir)).unwrap_or_default();
         list.iter().filter(|l| l.is_running()).filter(|l| l.stop()).count()
+    }
+}
+
+/// Pinned websites served in this session, by the folder they're served from: each on a loopback
+/// port of its own, until it's stopped or the session ends.
+#[derive(Default)]
+pub struct Sites(Mutex<HashMap<String, StaticServer>>);
+
+impl Sites {
+    /// The address `dir` is served at, if it is.
+    pub fn url(&self, dir: &Path) -> Option<String> {
+        self.0.lock().unwrap_or_else(PoisonError::into_inner).get(&key(dir)).map(StaticServer::url)
+    }
+
+    /// Serve `dir` unless it's served already; its address, and whether it already was.
+    pub fn open(&self, dir: &Path) -> Result<(String, bool), ToolError> {
+        let mut map = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(server) = map.get(&key(dir)) {
+            return Ok((server.url(), true));
+        }
+        let server = craft_anything_platform::serve::serve_dir(dir).map_err(|e| ToolError::io(dir.display(), e))?;
+        let url = server.url();
+        map.insert(key(dir), server);
+        Ok((url, false))
+    }
+
+    /// Stop serving `dir`; how many servers were stopped.
+    pub fn stop(&self, dir: &Path) -> usize {
+        let server = self.0.lock().unwrap_or_else(PoisonError::into_inner).remove(&key(dir));
+        usize::from(server.is_some())
     }
 }
 
@@ -1017,6 +1157,117 @@ mod tests {
         assert!(copy.join("notes.txt").is_file());
         assert!(!copy.join(crate::workspace::MANIFEST).exists(), "the project's records aren't part of the app");
         assert!(!copy.join(PINNED).exists(), "a pin never copies other pins");
+    }
+
+    /// A website's pin copies the built site alone, which a rebuild of the site leaves as it was;
+    /// a light one shares the site's media.
+    #[test]
+    fn a_website_is_pinned_as_a_copy_of_its_built_site() {
+        let d = tempfile::tempdir().unwrap();
+        let ws = Workspace::create(d.path(), "Site", "a page", TargetRef::None).unwrap();
+        let app = ws.app_dir();
+        std::fs::create_dir_all(app.join("src")).unwrap();
+        std::fs::write(app.join("package.json"), "{}").unwrap();
+        std::fs::write(app.join("src/main.js"), "go()").unwrap();
+        let dist = app.join("dist");
+        std::fs::create_dir_all(dist.join("build")).unwrap();
+        std::fs::write(dist.join("index.html"), "<h1>first</h1>").unwrap();
+        std::fs::write(dist.join("build/app.js"), "go()").unwrap();
+        std::fs::write(dist.join("logo.png"), vec![0u8; 4096]).unwrap();
+
+        let frozen = create(&ws, PinMode::Frozen, None, None, &mut |_, _| true).unwrap();
+        assert!(frozen.site);
+        let copy = frozen.app_dir(&ws);
+        assert!(copy.join("index.html").is_file() && copy.join("build/app.js").is_file(), "the whole built site is copied");
+        assert!(!copy.join("src").exists() && !copy.join("dist").exists(), "only the built site is copied");
+        std::fs::remove_file(dist.join("index.html")).unwrap();
+        std::fs::write(dist.join("index.html"), "<h1>second</h1>").unwrap();
+        assert_eq!(std::fs::read_to_string(copy.join("index.html")).unwrap(), "<h1>first</h1>");
+        assert!(get(&ws, frozen.id).unwrap().site, "saved as a website");
+
+        let size = estimate(&ws, None).unwrap();
+        assert!(size.light_bytes < size.bytes, "a light copy shares the media: {size:?}");
+        let light = create(&ws, PinMode::Light, None, None, &mut |_, _| true).unwrap();
+        assert!(light.site && light.shared_bytes + light.copied_shared_bytes >= 4096, "the logo is shared, or counted as copied: {light:?}");
+    }
+
+    /// A link inside the built site is served by the preview, so the pin serves it too, as the
+    /// file or folder it points to; one pointing out of the site is served by neither.
+    #[cfg(unix)]
+    #[test]
+    fn a_websites_pin_serves_the_links_inside_the_site() {
+        use std::os::unix::fs::symlink;
+        let d = tempfile::tempdir().unwrap();
+        let ws = Workspace::create(d.path(), "Site", "a page", TargetRef::None).unwrap();
+        let dist = ws.app_dir().join("dist");
+        std::fs::create_dir_all(dist.join("build")).unwrap();
+        std::fs::write(dist.join("index.html"), "<h1>site</h1>").unwrap();
+        std::fs::write(dist.join("build/app.js"), "go()").unwrap();
+        std::fs::write(dist.join("logo.png"), "logo").unwrap();
+        std::fs::write(d.path().join("private.txt"), "not the site's").unwrap();
+        std::fs::create_dir_all(dist.join("img")).unwrap();
+        symlink("../logo.png", dist.join("img/logo.png")).unwrap();
+        symlink("build", dist.join("assets")).unwrap();
+        symlink(d.path().join("private.txt"), dist.join("private.txt")).unwrap();
+
+        let pin = create(&ws, PinMode::Frozen, None, None, &mut |_, _| true).unwrap();
+        let served = std::fs::canonicalize(pin.app_dir(&ws)).unwrap();
+        let serves = |path: &str| craft_anything_platform::serve::resolve(&served, path).map(|f| std::fs::read_to_string(f).unwrap());
+        assert_eq!(serves("/img/logo.png").as_deref(), Some("logo"), "a linked file");
+        assert_eq!(serves("/assets/app.js").as_deref(), Some("go()"), "a linked folder");
+        assert!(!served.join("private.txt").exists(), "a link out of the site isn't copied");
+    }
+
+    /// What a site's copy leaves out stays out through a link, and a link back up the site doesn't
+    /// make its copy go round for ever.
+    #[cfg(unix)]
+    #[test]
+    fn a_websites_pin_follows_no_link_into_what_it_leaves_out_or_round_a_loop() {
+        use std::os::unix::fs::symlink;
+        let d = tempfile::tempdir().unwrap();
+        let ws = Workspace::create(d.path(), "Site", "a page", TargetRef::None).unwrap();
+        let dist = ws.app_dir().join("dist");
+        std::fs::create_dir_all(dist.join(".git")).unwrap();
+        std::fs::create_dir_all(dist.join("docs/guide")).unwrap();
+        std::fs::write(dist.join("index.html"), "<h1>site</h1>").unwrap();
+        std::fs::write(dist.join(".git/HEAD"), "ref: main").unwrap();
+        std::fs::write(dist.join("docs/guide/page.html"), "guide").unwrap();
+        symlink(".git", dist.join("repository")).unwrap();
+        symlink(".git/HEAD", dist.join("head")).unwrap();
+        symlink(".", dist.join("self")).unwrap();
+        symlink("../..", dist.join("docs/guide/up")).unwrap();
+        symlink("guide", dist.join("docs/again")).unwrap();
+
+        let pin = create(&ws, PinMode::Frozen, None, None, &mut |_, _| true).unwrap();
+        let app = pin.app_dir(&ws);
+        assert!(!app.join("repository").exists() && !app.join("head").exists(), "nothing of .git");
+        assert!(!app.join("self").exists() && !app.join("docs/guide/up").exists(), "no loop");
+        assert_eq!(std::fs::read_to_string(app.join("docs/again/page.html")).unwrap(), "guide", "a link that isn't a loop is still copied");
+        assert_eq!(std::fs::read_to_string(app.join("docs/guide/page.html")).unwrap(), "guide");
+    }
+
+    /// One folder is one running server or program, however its path is written.
+    #[test]
+    fn a_folder_has_one_key_however_it_is_written() {
+        let here = std::env::current_dir().unwrap();
+        assert_eq!(key(Path::new("pins/../pins/1")), key(&here.join("pins/1")));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_folder_reached_through_a_link_has_its_real_key_and_keeps_it_once_removed() {
+        let d = tempfile::tempdir().unwrap();
+        let (a, b) = (d.path().join("a"), d.path().join("b"));
+        std::fs::create_dir_all(b.join("sub")).unwrap();
+        std::fs::create_dir_all(b.join("pin")).unwrap();
+        std::fs::create_dir_all(a.join("pin")).unwrap();
+        std::os::unix::fs::symlink(b.join("sub"), a.join("link")).unwrap();
+        let through = a.join("link/../pin");
+        assert_eq!(key(&through), key(&b.join("pin")), "the link leads to b");
+        assert_ne!(key(&through), key(&a.join("pin")));
+        let before = key(&b.join("pin"));
+        std::fs::remove_dir(b.join("pin")).unwrap();
+        assert_eq!(key(&b.join("pin")), before, "a removed folder keeps its key");
     }
 
     #[test]
